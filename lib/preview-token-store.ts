@@ -134,9 +134,16 @@ export async function savePreviewToken(params: Omit<TokenEntry, 'createdAt'>): P
   store!.set(id, entry);
   fileTokenIndex?.set(params.fileToken, id);
 
-  // 异步写 DB（不阻塞返回）
-  withWriteLock(() => saveEntryToDb(id, entry)).catch((err) =>
-    console.error('[preview-token-store] 写入数据库失败:', err)
+  // 异步写 DB + 清理过期数据（不阻塞返回）
+  const now = Date.now();
+  withWriteLock(async () => {
+    await Promise.all([
+      saveEntryToDb(id, entry),
+      // 每次写入都清理 DB 过期条目，防止无限增长
+      deleteExpiredFromDb(now),
+    ]);
+  }).catch((err) =>
+    console.error('[preview-token-store] 写入/清理数据库失败:', err)
   );
 
   return id;
