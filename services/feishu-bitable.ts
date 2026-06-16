@@ -366,7 +366,7 @@ class FeishuBitable {
 
     const res = await this.client.bitable.appTableRecord.list({
       path: { app_token: appToken, table_id: tableId },
-      params: { page_size: pageSize, page_token: pageToken, field_name_type: 'field_id' },
+      params: { page_size: pageSize, page_token: pageToken, field_names: '["*"]' as any },
     }, this.sdkOptions(userAccessToken));
 
     if (res.code !== 0) {
@@ -399,7 +399,6 @@ class FeishuBitable {
 
     const res = await this.client.bitable.appTableRecord.get({
       path: { app_token: appToken, table_id: tableId, record_id: recordId },
-      params: { field_name_type: 'field_id' },
     }, this.sdkOptions(userAccessToken));
 
     if (res.code !== 0) {
@@ -809,7 +808,7 @@ class FeishuBitable {
     return {
       files: apps,
       has_more: d.has_more || false,
-      page_token: d.page_token || '',
+      page_token: (d as any).page_token || '',
     };
   }
 

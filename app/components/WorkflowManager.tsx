@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Zap, Settings, ClipboardList, Link, Clock, Calendar, Filter, Timer, X, Trash2, Plus, Search, Pencil, AlertTriangle, Globe, MessageSquare, Send, GripVertical, Copy, Play, Type, Hash, CircleDot, CheckSquare, Check, User, Paperclip, Phone, Mail, Sigma, UserPlus, History, Monitor, Webhook, ArrowUpLeft, Pin, Table } from 'lucide-react';
+import { Zap, Settings, ClipboardList, Link, Clock, Calendar, Filter, Timer, X, Trash2, Plus, Search, Pencil, AlertTriangle, Globe, MessageSquare, Send, GripVertical, Copy, Play, Type, Hash, CircleDot, CheckSquare, Check, User, Paperclip, Phone, Mail, Sigma, UserPlus, History, Monitor, Webhook, ArrowUpLeft, Pin, Table as TableIcon } from 'lucide-react';
 import type { Field, Workflow, WorkflowNode, NodeKind, CrdAction, FieldMapping, FilterCondition, FilterOp, App, Table, TriggerKind } from '@/types';
 import { CRUD_ACTION_META, TRIGGER_KIND_META } from '@/types';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
@@ -47,7 +47,7 @@ const GROUP_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
 const TRIGGER_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   webhook: Webhook,
   scheduled: Clock,
-  bitable_event: Table,
+  bitable_event: TableIcon,
 };
 const OP_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   filter: Filter,
