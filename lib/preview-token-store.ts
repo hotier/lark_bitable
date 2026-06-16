@@ -40,6 +40,20 @@ function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   return prev.then(fn).finally(() => release!());
 }
 
+// ── DB 清理节流 ──
+let lastDbCleanup = 0;
+const DB_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 分钟内最多清理一次 DB
+
+function shouldCleanDb(): boolean {
+  return Date.now() - lastDbCleanup > DB_CLEANUP_INTERVAL;
+}
+
+async function throttledDbCleanup(now: number): Promise<void> {
+  if (!shouldCleanDb()) return;
+  lastDbCleanup = now;
+  await deleteExpiredFromDb(now);
+}
+
 // ── DB 操作 ──
 
 async function loadFromDb(): Promise<Map<string, TokenEntry>> {
@@ -134,14 +148,12 @@ export async function savePreviewToken(params: Omit<TokenEntry, 'createdAt'>): P
   store!.set(id, entry);
   fileTokenIndex?.set(params.fileToken, id);
 
-  // 异步写 DB + 清理过期数据（不阻塞返回）
+  // 异步写 DB + 节流清理过期数据（不阻塞返回）
   const now = Date.now();
   withWriteLock(async () => {
-    await Promise.all([
-      saveEntryToDb(id, entry),
-      // 每次写入都清理 DB 过期条目，防止无限增长
-      deleteExpiredFromDb(now),
-    ]);
+    await saveEntryToDb(id, entry);
+    // 节流：5 分钟内最多清理一次 DB，避免并发写入重复 DELETE
+    await throttledDbCleanup(now);
   }).catch((err) =>
     console.error('[preview-token-store] 写入/清理数据库失败:', err)
   );
@@ -160,9 +172,9 @@ export async function getPreviewToken(id: string): Promise<TokenEntry | null> {
   if (Date.now() - entry.createdAt > TTL_MS) {
     store?.delete(id);
     fileTokenIndex?.delete(entry.fileToken);
-    // 异步清理 DB 过期数据（概率触发，减少开销）
+    // 异步清理 DB 过期数据（概率触发 + 节流，减少开销）
     if (Math.random() < 0.1) {
-      withWriteLock(() => deleteExpiredFromDb(Date.now())).catch(() => {});
+      withWriteLock(() => throttledDbCleanup(Date.now())).catch(() => {});
     }
     return null;
   }
