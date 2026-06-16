@@ -366,7 +366,7 @@ class FeishuBitable {
 
     const res = await this.client.bitable.appTableRecord.list({
       path: { app_token: appToken, table_id: tableId },
-      params: { page_size: pageSize, page_token: pageToken, field_names: '["*"]' as any },
+      params: { page_size: pageSize, page_token: pageToken },
     }, this.sdkOptions(userAccessToken));
 
     if (res.code !== 0) {
