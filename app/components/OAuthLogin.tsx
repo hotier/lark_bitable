@@ -1,5 +1,7 @@
 'use client';
 
+import { LogOut } from 'lucide-react';
+
 interface OAuthLoginProps {
   isAuthenticated: boolean;
   oauthUrl: string;
@@ -30,37 +32,27 @@ export default function OAuthLogin({
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <span className="flex items-center gap-1.5 text-xs font-medium mr-2" style={{ color: 'var(--success)' }}>
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--success)' }} />
-          <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: 'var(--success)' }} />
-        </span>
-        已连接
-      </span>
-
+    <div className="flex items-center gap-4">
       <button
         onClick={onFetchApps} disabled={isLoading}
-        className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50/80 border border-emerald-200/50 transition-all duration-200 disabled:cursor-not-allowed hover:bg-emerald-100/80"
+        title="点击同步飞书数据"
       >
-        <svg className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        同步
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ background: isLoading ? '#9ca3af' : '#34d399' }} />
+          <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: isLoading ? '#9ca3af' : '#10b981' }} />
+        </span>
+        <span className="text-xs font-semibold text-emerald-700">
+          {isLoading ? '同步中...' : '已连接飞书'}
+        </span>
       </button>
 
       <button
         onClick={onLogout}
-        className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
-        style={{ color: 'var(--text-muted)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--danger-light)'; e.currentTarget.style.color = 'var(--danger)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200"
       >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-        </svg>
-        退出
+        <LogOut className="w-3 h-3" />
+        退出登录
       </button>
     </div>
   );

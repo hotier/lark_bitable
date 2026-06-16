@@ -71,7 +71,7 @@ function EmptyState({ isAuthenticated }: { isAuthenticated: boolean }) {
       <h3 className="text-lg font-semibold text-neutral-700 mb-2">暂无多维表格</h3>
       <p className="text-sm text-neutral-400 max-w-sm text-center">
         {isAuthenticated
-          ? '点击「新建」创建多维表格，或点击顶部「同步」获取已有列表'
+          ? '点击「新建」创建多维表格，或点击顶部「已连接」获取已有列表'
           : '请先使用飞书账号进行授权登录'}
       </p>
     </div>
@@ -278,7 +278,7 @@ export default function AppGrid({
       {apps.length === 0 ? (
         <EmptyState isAuthenticated={isAuthenticated} />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-5">
           {apps.map((app, index) => {
             const isSelected = selectedApp?.app_token === app.app_token;
             const accent = ACCENT_COLORS[index % ACCENT_COLORS.length];

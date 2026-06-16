@@ -1,15 +1,16 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
-import { Grid3X3, Plus, Trash2, FileCode } from 'lucide-react';
+import { Grid3X3, Plus, Trash2 } from 'lucide-react';
 import type { App, ToastMessage } from '@/types';
 import {
   listSheets, createSheet, deleteFile,
+  logout as apiLogout,
 } from '@/lib/api';
 import OAuthLogin from '@/app/components/OAuthLogin';
 import Toast from '@/app/components/Toast';
 import NameCard from '@/app/components/NameCard';
+import ConfirmDialog from '@/app/components/ConfirmDialog';
 
 let toastId = 0;
 function nextId() { return `t${++toastId}`; }
@@ -24,18 +25,10 @@ export default function SheetsPage() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [nameCardFile, setNameCardFile] = useState<App | null>(null);
   const [nameCardRect, setNameCardRect] = useState<DOMRect | undefined>(undefined);
+  const [deleteTarget, setDeleteTarget] = useState<App | null>(null);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('feishu_user_token');
-    const storedExpire = localStorage.getItem('feishu_token_expire');
-    let valid = false;
-    if (storedToken && storedExpire) {
-      const storedVal = parseInt(storedExpire);
-      const expireTime = storedVal > 10_000_000_000 ? storedVal : Date.now() + storedVal * 1000;
-      if (Date.now() < expireTime) { setIsAuthenticated(true); valid = true; }
-      else { localStorage.removeItem('feishu_user_token'); localStorage.removeItem('feishu_token_expire'); }
-    }
-    if (!valid) window.location.replace('/');
+    setIsAuthenticated(true); // AuthGuard 已验证
   }, []);
 
   const addToast = useCallback((type: ToastMessage['type'], text: string) => {
@@ -77,8 +70,10 @@ export default function SheetsPage() {
     }
   };
 
-  const handleDelete = async (file: App) => {
-    if (!confirm(`确定要删除「${file.name}」吗？此操作不可恢复。`)) return;
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const file = deleteTarget;
+    setDeleteTarget(null);
     try {
       await deleteFile(file.app_token, 'sheet');
       addToast('success', `已删除「${file.name}」`);
@@ -101,22 +96,15 @@ export default function SheetsPage() {
           <h1 className="text-base font-semibold text-neutral-900">在线表格管理</h1>
         </div>
         <div className="flex items-center gap-3">
-          <Link
-            href="/flow"
-            className="flex items-center gap-1.5 text-sm font-medium text-neutral-400 hover:text-neutral-600 transition-colors"
-          >
-            <FileCode className="w-4 h-4" />
-            机器人指令
-          </Link>
           <OAuthLogin
             isAuthenticated={isAuthenticated} oauthUrl="" isLoading={isLoading}
-            onFetchApps={loadFiles} onLogout={() => { localStorage.removeItem('feishu_user_token'); localStorage.removeItem('feishu_token_expire'); setFiles([]); window.location.replace('/'); }}
+            onFetchApps={loadFiles} onLogout={async () => { await apiLogout(); setFiles([]); window.location.replace('/'); }} hideLogin
           />
         </div>
       </header>
 
       <div className="flex-1 overflow-auto">
-        <div className="max-w-[1200px] mx-auto px-6 py-6 space-y-6">
+        <div className="px-6 py-6 space-y-6">
           {/* Toolbar */}
           <div className="flex items-center justify-between">
             <p className="text-sm text-neutral-400">
@@ -211,7 +199,7 @@ export default function SheetsPage() {
                   </div>
                   <div className="w-[72px] flex justify-end flex-shrink-0">
                     <button
-                      onClick={() => handleDelete(file)}
+                      onClick={() => setDeleteTarget(file)}
                       className="p-1.5 rounded-md text-neutral-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
                       title="删除"
                     >
@@ -234,6 +222,16 @@ export default function SheetsPage() {
           onClose={() => setNameCardFile(null)}
         />
       )}
+
+      {/* 删除确认弹窗 */}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除在线表格"
+        message={<>确定要删除 <span className="font-semibold text-neutral-800">「{deleteTarget?.name}」</span> 吗？此操作不可恢复。</>}
+        confirmLabel="删除"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       {/* Create Modal */}
       {showCreate && (

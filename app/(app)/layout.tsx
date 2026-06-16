@@ -11,7 +11,7 @@ export default function AppLayout({
       <div className="flex h-full">
         <Sidebar />
         <main
-          className="flex-1 overflow-auto"
+          className="flex-1 overflow-hidden flex flex-col"
           style={{ marginLeft: 'var(--sidebar-width)' }}
         >
           {children}

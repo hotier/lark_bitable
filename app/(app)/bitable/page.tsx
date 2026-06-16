@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Table2, ClipboardList, FileText, Tag, FileCode, ChevronRight } from 'lucide-react';
+import { Table2, ClipboardList, FileText, ChevronRight } from 'lucide-react';
 import type { App, Table, Field, FieldType, BitableRecord, ToastMessage } from '@/types';
 import {
   refreshApps, invalidateAppsCache, createApp,
   listTables, createTable, deleteTable, listFields,
   listRecords, createRecord, deleteApiRecord,
+  logout as apiLogout,
 } from '@/lib/api';
 import OAuthLogin from '@/app/components/OAuthLogin';
 import AppGrid from '@/app/components/AppGrid';
@@ -28,6 +29,8 @@ export default function DashboardPage() {
   const [selectedTableId, setSelectedTableId] = useState('');
   const [tableFields, setTableFields] = useState<Field[]>([]);
   const [selectedFieldId, setSelectedFieldId] = useState('');
+  // 快速导航中勾选的字段集合（多选；为空时显示全部字段）
+  const [selectedFieldIds, setSelectedFieldIds] = useState<Set<string>>(new Set());
   const [records, setRecords] = useState<BitableRecord[]>([]);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [view, setView] = useState<View>('apps');
@@ -53,16 +56,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('feishu_user_token');
-    const storedExpire = localStorage.getItem('feishu_token_expire');
-    let valid = false;
-    if (storedToken && storedExpire) {
-      const storedVal = parseInt(storedExpire);
-      const expireTime = storedVal > 10_000_000_000 ? storedVal : Date.now() + storedVal * 1000;
-      if (Date.now() < expireTime) { setIsAuthenticated(true); valid = true; }
-      else { localStorage.removeItem('feishu_user_token'); localStorage.removeItem('feishu_token_expire'); }
-    }
-    if (!valid) window.location.replace('/');
+    setIsAuthenticated(true); // AuthGuard 已验证
   }, []);
 
   const withLoading = async (fn: () => Promise<void>, successMsg?: string, errorPrefix = '操作失败') => {
@@ -76,15 +70,10 @@ export default function DashboardPage() {
     setPageTokens(['']); setCurrentPage(1); setHasMore(false); setTotal(0);
   }, []);
 
-  const handleLogout = () => {
-    localStorage.removeItem('feishu_user_token');
-    localStorage.removeItem('feishu_token_expire');
+  const handleLogout = async () => {
+    await apiLogout();
     invalidateAppsCache();
-    setIsAuthenticated(false);
-    setApps([]); setSelectedApp(null); setTables([]); setSelectedTableId('');
-    setTableFields([]); setSelectedFieldId(''); setRecords([]); setRecordsLoaded(false);
-    setView('apps');
-    resetPagination();
+    window.location.replace('/');
   };
 
   const handleListApps = useCallback(() => {
@@ -103,7 +92,7 @@ export default function DashboardPage() {
 
   const handleSelectApp = useCallback((app: App) => {
     setSelectedApp(app); setView('tables');
-    setSelectedTableId(''); setSelectedFieldId(''); setRecords([]); setRecordsLoaded(false);
+    setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false);
     resetPagination();
     // 自动加载该 App 下的数据表列表
     withLoading(async () => {
@@ -141,7 +130,7 @@ export default function DashboardPage() {
 
   const handleSelectTable = useCallback((table: Table) => {
     setSelectedTableId(table.table_id);
-    setSelectedFieldId(''); setRecords([]); setRecordsLoaded(false); setView('records');
+    setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false); setView('records');
     resetPagination();
     // 自动加载该数据表的字段和记录
     if (selectedApp) {
@@ -164,25 +153,57 @@ export default function DashboardPage() {
   }, [selectedApp, pageTokens, resetPagination]);
 
   const handleSelectorSelectApp = useCallback(async (app: App) => {
-    setSelectedApp(app); setTables([]); setTableFields([]);
-    setSelectedTableId(''); setSelectedFieldId('');
+    setSelectedApp(app); setView('tables'); setTables([]); setTableFields([]);
+    setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false);
+    resetPagination();
     setLoadingTables(true);
     try { const data = await listTables(app.app_token); setTables(data.items || []); }
     catch (err) { addToast('error', `加载数据表失败: ${err instanceof Error ? err.message : '未知错误'}`); }
     finally { setLoadingTables(false); }
-  }, []);
+  }, [resetPagination]);
 
   const handleSelectorSelectTable = useCallback(async (table: Table) => {
-    setSelectedTableId(table.table_id); setSelectedFieldId(''); setTableFields([]);
+    setSelectedTableId(table.table_id); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setTableFields([]);
+    setView('records'); setRecords([]); setRecordsLoaded(false);
+    resetPagination();
     if (selectedApp) {
       setLoadingFields(true);
-      try { const fields = await listFields(selectedApp.app_token, table.table_id); setTableFields(fields); }
-      catch (err) { addToast('error', `加载字段失败: ${err instanceof Error ? err.message : '未知错误'}`); }
+      try {
+        const token = pageTokens[0] || '';
+        const [fields, recordsData] = await Promise.all([
+          listFields(selectedApp.app_token, table.table_id),
+          listRecords(selectedApp.app_token, table.table_id, PAGE_SIZE, token),
+        ]);
+        setTableFields(fields);
+        setRecords(recordsData.records || []);
+        setTotal(recordsData.total || recordsData.records.length);
+        setHasMore(recordsData.has_more || false);
+        if (recordsData.has_more && recordsData.page_token) {
+          setPageTokens((prev) => { const n = [...prev]; n[1] = recordsData.page_token; return n; });
+        }
+        setRecordsLoaded(true);
+      }
+      catch (err) { addToast('error', `加载字段/记录失败: ${err instanceof Error ? err.message : '未知错误'}`); }
       finally { setLoadingFields(false); }
     }
-  }, [selectedApp]);
+  }, [selectedApp, pageTokens, resetPagination]);
 
-  const handleSelectorSelectField = useCallback((field: Field) => { setSelectedFieldId(field.field_id); }, []);
+  const handleSelectorToggleField = useCallback((field: Field) => {
+    setSelectedFieldIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(field.field_id)) {
+        next.delete(field.field_id);
+      } else {
+        next.add(field.field_id);
+      }
+      return next;
+    });
+  }, []);
+
+  // 根据勾选的字段筛选展示列；未勾选任何字段时显示全部
+  const displayFields = selectedFieldIds.size > 0
+    ? tableFields.filter((f) => selectedFieldIds.has(f.field_id))
+    : tableFields;
 
   const handleListRecords = useCallback(() => {
     if (!selectedApp || !selectedTableId) return;
@@ -337,15 +358,6 @@ export default function DashboardPage() {
 
   const selectedTable = tables.find((t) => t.table_id === selectedTableId);
 
-  const STATS = [
-    { label: '多维表格', value: apps.length, icon: Table2 },
-    { label: '数据表', value: tables.length, icon: ClipboardList },
-    ...(view === 'records' ? [
-      { label: '记录', value: total, icon: FileText },
-      { label: '字段', value: tableFields.length, icon: Tag },
-    ] : []),
-  ];
-
   const TABS = [
     { key: 'apps' as View, label: '表格列表', icon: Table2 },
     { key: 'tables' as View, label: '数据表', icon: ClipboardList },
@@ -358,13 +370,13 @@ export default function DashboardPage() {
 
       {/* Top Bar */}
       <header
-        className="sticky top-0 z-20 flex items-center justify-between h-14 px-6 flex-shrink-0"
+        className="z-20 flex items-center justify-between h-14 px-6 flex-shrink-0"
         style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
       >
         {/* Breadcrumb */}
         <nav className="flex items-center gap-1.5 text-sm" aria-label="Breadcrumb">
           <button
-            onClick={() => { setView('apps'); setSelectedApp(null); setTables([]); setSelectedTableId(''); setSelectedFieldId(''); setRecords([]); setRecordsLoaded(false); resetPagination(); }}
+            onClick={() => { setView('apps'); setSelectedApp(null); setTables([]); setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false); resetPagination(); }}
             className="font-medium transition-colors"
             style={{ color: view === 'apps' ? 'var(--text)' : 'var(--text-tertiary)' }}
           >
@@ -374,7 +386,7 @@ export default function DashboardPage() {
             <>
               <ChevronRight className="w-4 h-4 text-neutral-300" />
               <button
-                onClick={() => { setView('tables'); setSelectedTableId(''); setSelectedFieldId(''); setRecords([]); setRecordsLoaded(false); }}
+                onClick={() => { setView('tables'); setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false); }}
                 className="font-medium transition-colors truncate max-w-[200px]"
                 style={{ color: view === 'tables' ? 'var(--text)' : 'var(--text-tertiary)' }}
               >
@@ -393,13 +405,6 @@ export default function DashboardPage() {
         </nav>
 
         <div className="flex items-center gap-3">
-          <Link
-            href="/flow"
-            className="flex items-center gap-1.5 text-sm font-medium text-neutral-400 hover:text-neutral-600 transition-colors"
-          >
-            <FileCode className="w-4 h-4" />
-            机器人指令
-          </Link>
           <OAuthLogin
             isAuthenticated={isAuthenticated} oauthUrl="" isLoading={isLoading}
             onFetchApps={handleListApps} onLogout={handleLogout} hideLogin
@@ -407,33 +412,10 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-[1200px] mx-auto px-6 py-6 space-y-6">
-          {/* Stats */}
-          {STATS.length > 0 && (
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in">
-              {STATS.map((stat) => (
-                <div
-                  key={stat.label}
-                  className="p-4 rounded-lg"
-                  style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <stat.icon className="w-4 h-4 text-neutral-400" />
-                    <span className="text-xs font-medium text-neutral-400 uppercase tracking-wide">
-                      {stat.label}
-                    </span>
-                  </div>
-                  <div className="text-2xl font-semibold tabular-nums text-neutral-900">
-                    {stat.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Field Selector */}
-          {isAuthenticated && (
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {/* Field Selector / 快速导航 */}
+        {isAuthenticated && (
+          <div className="px-6 pt-6 flex-shrink-0">
             <div
               className="p-4 rounded-lg animate-fade-in"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
@@ -446,24 +428,27 @@ export default function DashboardPage() {
                   <FieldSelector
                     apps={apps} tables={tables} tableFields={tableFields}
                     selectedApp={selectedApp} selectedTableId={selectedTableId} selectedFieldId={selectedFieldId}
+                    selectedFieldIds={selectedFieldIds}
                     loadingTables={loadingTables} loadingFields={loadingFields}
                     onSelectApp={handleSelectorSelectApp}
                     onSelectTable={handleSelectorSelectTable}
-                    onSelectField={handleSelectorSelectField}
+                    onToggleField={handleSelectorToggleField}
                   />
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Tabs + Content */}
+        {/* Tabs + Content */}
+        <div className="flex-1 min-h-0 flex flex-col px-6 pb-6 pt-6">
           <div
-            className="rounded-lg overflow-hidden animate-fade-in"
+            className="flex-1 min-h-0 flex flex-col rounded-lg overflow-hidden animate-fade-in"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
           >
             {/* Tab bar */}
             <div
-              className="flex border-b px-2"
+              className="flex-shrink-0 flex border-b px-2"
               style={{ borderColor: 'var(--border)' }}
             >
               {TABS.map((tab) => (
@@ -487,8 +472,8 @@ export default function DashboardPage() {
               ))}
             </div>
 
-            {/* Tab content */}
-            <div className="p-6">
+            {/* Tab content — 各组件自行管理滚动 */}
+            <div className="flex-1 min-h-0 overflow-hidden p-6">
               {view === 'apps' && (
                 <AppGrid
                   apps={apps} selectedApp={selectedApp}
@@ -507,7 +492,7 @@ export default function DashboardPage() {
               {view === 'records' && (
                 <RecordManager
                   appToken={selectedApp?.app_token ?? ''} tableId={selectedTableId}
-                  fields={tableFields} records={records} isLoading={isLoading}
+                  fields={tableFields} displayFields={displayFields} records={records} isLoading={isLoading}
                   onSwitchToTables={() => setView('tables')}
                   onCreateRecord={handleCreateRecord} onDeleteRecord={handleDeleteRecord}
                   onRefreshRecords={handleListRecords}

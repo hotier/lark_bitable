@@ -3,6 +3,11 @@
  *
  * 数据流：
  *   前端组件 → lib/api.ts → POST /api/bitable → services/feishu-bitable.ts → 飞书开放平台
+ *
+ * ⚠️ Token 不再存储于 localStorage，改为 HttpOnly Cookie 自动携带：
+ *   - OAuth 回调后，服务端将 token 写入 HttpOnly Cookie（JS 不可读，防 XSS）
+ *   - 所有 API 请求携带 credentials: 'include'，Cookie 自动发送
+ *   - 前端通过 checkAuthStatus() 获知登录状态
  */
 
 import type {
@@ -21,8 +26,6 @@ import type {
 const API_URL = '/api/bitable';
 
 // ====== 模块级缓存：避免页面切换时重复请求 ======
-// Next.js App Router 在路由切换时会卸载/挂载页面组件，
-// 但同一 JS 模块在客户端 SPA 中保持存活，因此模块级变量可跨导航持久化。
 const APPS_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
 
 interface AppsCacheEntry {
@@ -36,39 +39,22 @@ export function invalidateAppsCache() {
   appsCache = null;
 }
 
-/** 从 localStorage 获取保存的用户 token 信息 */
-function getStoredAuth(): { userToken: string | null; tokenExpire: string | null } {
-  if (typeof window === 'undefined') return { userToken: null, tokenExpire: null };
-  return {
-    userToken: localStorage.getItem('feishu_user_token'),
-    tokenExpire: localStorage.getItem('feishu_token_expire'),
-  };
-}
-
 /**
  * 统一 API 请求封装
- * 自动附加用户 token，统一的错误处理
+ * Token 通过 HttpOnly Cookie 自动携带，前端无需手动处理
  */
 async function request<T>(body: Record<string, unknown>): Promise<T> {
-  const { userToken, tokenExpire } = getStoredAuth();
-  const isAuth = !!userToken;
-
   const response = await fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...body,
-      useUserToken: isAuth,
-      userToken,
-      tokenExpire,
-    }),
+    credentials: 'include',  // ← 携带 HttpOnly Cookie
+    body: JSON.stringify(body),
   });
 
   const result: ApiResponse<T> & { feishuCode?: number; feishuMsg?: string } = await response.json();
 
   if (!result.success) {
     let errMsg = result.error || '请求失败';
-    // 附加飞书 API 的原始错误信息
     if (result.feishuCode !== undefined) {
       errMsg += ` [飞书 ${result.feishuCode}: ${result.feishuMsg || '未知'}]`;
     }
@@ -87,34 +73,37 @@ export async function fetchOAuthUrl(): Promise<string> {
 }
 
 /**
- * 用 Cookie 中的一次性授权码换取 token（OAuth 回调后前端自动调用）
- * 不走常规 request 函数（此时用户尚未认证），cookie 自动携带
+ * 检查认证状态（直接读取 Cookie，不再需要额外交换步骤）
+ * Token 已在 OAuth 回调时直接写入 HttpOnly Cookie
  */
-export async function exchangeAuthCode(): Promise<{
-  accessToken: string;
-  refreshToken: string;
-  expire: number;
-} | null> {
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ action: 'exchangeAuthCode' }),
-  });
-  const result = await response.json();
-  if (!result.success) return null;
-  return result.data;
+export async function exchangeAuthCode(): Promise<boolean> {
+  return checkAuthStatus();
+}
+
+/** 检查当前认证状态 */
+export async function checkAuthStatus(): Promise<boolean> {
+  try {
+    const data = await request<{ authenticated: boolean }>({ action: 'authStatus' });
+    return data.authenticated;
+  } catch {
+    return false;
+  }
+}
+
+/** 登出 — 清除 HttpOnly Cookie + 服务端 token */
+export async function logout(): Promise<void> {
+  await request<{ ok: boolean }>({ action: 'logout' });
+  invalidateAppsCache();
 }
 
 // ====== 多维表格应用 (Apps) ======
 
-/** listApps 返回结果，包含数据和是否来自缓存的标记 */
 export interface ListAppsResult {
   data: ListAppsData;
   fromCache: boolean;
 }
 
-/** 获取所有多维表格应用列表（带模块级缓存，避免页面切换重复请求） */
+/** 获取所有多维表格应用列表（带模块级缓存） */
 export async function listApps(): Promise<ListAppsResult> {
   if (appsCache && Date.now() - appsCache.timestamp < APPS_CACHE_TTL) {
     return { data: appsCache.data, fromCache: true };
@@ -131,141 +120,72 @@ export async function refreshApps(): Promise<ListAppsResult> {
 }
 
 /** 创建新的多维表格应用 */
-export async function createApp(
-  name: string,
-  folderToken?: string
-): Promise<App> {
-  const data = await request<App>({ action: 'createApp', appName: name, folderToken });
-  return data;
+export async function createApp(name: string, folderToken?: string): Promise<App> {
+  return request<App>({ action: 'createApp', appName: name, folderToken });
 }
 
 // ====== 云文档 (Docx) ======
 
-/** 获取所有云文档列表（带模块级缓存） */
-export async function listDocs(
-  pageSize = 100,
-  pageToken = '',
-  folderToken = ''
-): Promise<ListAppsData> {
+export async function listDocs(pageSize = 100, pageToken = '', folderToken = ''): Promise<ListAppsData> {
   return request<ListAppsData>({ action: 'listDocs', pageSize, pageToken, folderToken });
 }
 
-/** 创建云文档 */
-export async function createDoc(
-  title: string,
-  folderToken?: string
-): Promise<App> {
-  const data = await request<App>({ action: 'createDoc', appName: title, folderToken });
-  return data;
+export async function createDoc(title: string, folderToken?: string): Promise<App> {
+  return request<App>({ action: 'createDoc', appName: title, folderToken });
 }
 
 // ====== 在线表格 (Sheet) ======
 
-/** 获取所有在线表格列表（带模块级缓存） */
-export async function listSheets(
-  pageSize = 100,
-  pageToken = '',
-  folderToken = ''
-): Promise<ListAppsData> {
+export async function listSheets(pageSize = 100, pageToken = '', folderToken = ''): Promise<ListAppsData> {
   return request<ListAppsData>({ action: 'listSheets', pageSize, pageToken, folderToken });
 }
 
-/** 创建在线表格 */
-export async function createSheet(
-  title: string,
-  folderToken?: string
-): Promise<App> {
-  const data = await request<App>({ action: 'createSheet', appName: title, folderToken });
-  return data;
+export async function createSheet(title: string, folderToken?: string): Promise<App> {
+  return request<App>({ action: 'createSheet', appName: title, folderToken });
 }
 
 // ====== 文件删除（通用） ======
 
-/** 删除云文件（支持 docx/sheet 等类型） */
 export async function deleteFile(fileToken: string, fileType: string): Promise<void> {
   return request<void>({ action: 'deleteFile', fileToken, fileType });
 }
 
 // ====== 数据表 (Tables) ======
 
-/** 获取指定应用下的数据表列表 */
-export async function listTables(
-  appToken: string,
-  pageSize = 100,
-  pageToken = ''
-): Promise<ListTablesData> {
+export async function listTables(appToken: string, pageSize = 100, pageToken = ''): Promise<ListTablesData> {
   return request<ListTablesData>({ action: 'listTables', appToken, pageSize, pageToken });
 }
 
-/** 创建数据表 */
-export async function createTable(
-  appToken: string,
-  tableName: string,
-  fields: { name: string; type: FieldType }[]
-): Promise<Table> {
+export async function createTable(appToken: string, tableName: string, fields: { name: string; type: FieldType }[]): Promise<Table> {
   return request<Table>({ action: 'createTable', appToken, tableName, fields });
 }
 
-/** 删除数据表 */
 export async function deleteTable(appToken: string, tableId: string): Promise<void> {
   return request<void>({ action: 'deleteTable', appToken, tableId });
 }
 
-/** 获取表的字段列表 */
-export async function listFields(
-  appToken: string,
-  tableId: string,
-  pageSize = 100,
-  pageToken = ''
-): Promise<Field[]> {
+export async function listFields(appToken: string, tableId: string, pageSize = 100, pageToken = ''): Promise<Field[]> {
   return request<Field[]>({ action: 'listFields', appToken, tableId, pageSize, pageToken });
 }
 
 // ====== 记录 (Records) ======
 
-/** 获取记录列表 */
-export async function listRecords(
-  appToken: string,
-  tableId: string,
-  pageSize = 100,
-  pageToken = ''
-): Promise<ListRecordsData> {
+export async function listRecords(appToken: string, tableId: string, pageSize = 100, pageToken = ''): Promise<ListRecordsData> {
   return request<ListRecordsData>({ action: 'list', appToken, tableId, pageSize, pageToken });
 }
 
-/** 读取单条记录 */
-export async function readRecord(
-  appToken: string,
-  tableId: string,
-  recordId: string
-): Promise<BitableRecord> {
+export async function readRecord(appToken: string, tableId: string, recordId: string): Promise<BitableRecord> {
   return request<BitableRecord>({ action: 'read', appToken, tableId, recordId });
 }
 
-/** 创建记录 */
-export async function createRecord(
-  appToken: string,
-  tableId: string,
-  fields: Record<string, unknown>
-): Promise<BitableRecord> {
+export async function createRecord(appToken: string, tableId: string, fields: Record<string, unknown>): Promise<BitableRecord> {
   return request<BitableRecord>({ action: 'create', appToken, tableId, fields });
 }
 
-/** 更新记录 */
-export async function updateRecord(
-  appToken: string,
-  tableId: string,
-  recordId: string,
-  fields: Record<string, unknown>
-): Promise<BitableRecord> {
+export async function updateRecord(appToken: string, tableId: string, recordId: string, fields: Record<string, unknown>): Promise<BitableRecord> {
   return request<BitableRecord>({ action: 'update', appToken, tableId, recordId, fields });
 }
 
-/** 删除记录 */
-export async function deleteApiRecord(
-  appToken: string,
-  tableId: string,
-  recordId: string
-): Promise<string> {
+export async function deleteApiRecord(appToken: string, tableId: string, recordId: string): Promise<string> {
   return request<string>({ action: 'delete', appToken, tableId, recordId });
 }

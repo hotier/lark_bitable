@@ -6,6 +6,7 @@ import type { App, ToastMessage } from '@/types';
 import {
   listApps, listTables, listFields, createRecord, listRecords,
   updateRecord, deleteApiRecord, refreshApps, invalidateAppsCache,
+  logout as apiLogout,
 } from '@/lib/api';
 import OAuthLogin from '@/app/components/OAuthLogin';
 import WorkflowManager from '@/app/components/WorkflowManager';
@@ -28,14 +29,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
   }, []);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('feishu_user_token');
-    const storedExpire = localStorage.getItem('feishu_token_expire');
-    if (storedToken && storedExpire) {
-      const storedVal = parseInt(storedExpire);
-      const expireTime = storedVal > 10_000_000_000 ? storedVal : Date.now() + storedVal * 1000;
-      if (Date.now() < expireTime) setIsAuthenticated(true);
-      else { localStorage.removeItem('feishu_user_token'); localStorage.removeItem('feishu_token_expire'); }
-    }
+    setIsAuthenticated(true); // AuthGuard 已验证
   }, []);
 
   useEffect(() => {
@@ -47,8 +41,8 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
     }
   }, [isAuthenticated, apps.length]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('feishu_user_token'); localStorage.removeItem('feishu_token_expire');
+  const handleLogout = async () => {
+    await apiLogout();
     invalidateAppsCache(); setIsAuthenticated(false); setApps([]);
   };
 
@@ -110,7 +104,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
       </header>
 
       <div className="flex-1 overflow-auto">
-        <div className="max-w-[1200px] mx-auto px-6 py-6">
+        <div className="px-6 py-6">
           {!isAuthenticated ? (
             <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
               <svg className="w-16 h-16 mb-4 text-neutral-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>

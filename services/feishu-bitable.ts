@@ -1,5 +1,5 @@
 import { Client, withUserAccessToken } from '@larksuiteoapi/node-sdk';
-import { loadToken, saveToken, deleteToken } from '@/lib/token-store';
+import { loadTokenSync, saveToken, deleteToken, reloadToken } from '@/lib/token-store';
 import type {
   BitableRecord,
   ListRecordsData,
@@ -60,23 +60,22 @@ class FeishuBitable {
       appSecret: process.env.APP_SECRET || '',
     });
 
-    // 服务启动时尝试从持久化文件恢复 token（保证重启后 webhook 仍可用）
-    const stored = loadToken();
+    // 构造时尝试从内存缓存恢复 token（持久化存储 + 内存缓存层）
+    // 冷启动时缓存为空 → ensureAuth() 会从数据库兜底恢复
+    const stored = loadTokenSync();
     if (stored) {
       if (Date.now() < stored.accessTokenExpireAt) {
-        // access_token 仍有效，直接恢复
         this.userAccessToken = stored.accessToken;
         this.userTokenExpireTime = stored.accessTokenExpireAt;
         this.refreshToken = stored.refreshToken;
         this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-        console.log('[FeishuBitable] 从持久化文件恢复了有效的 user token');
+        console.log('[FeishuBitable] 从内存缓存恢复了有效的 user token');
       } else if (Date.now() < stored.refreshTokenExpireAt) {
-        // access_token 过期但 refresh_token 有效，恢复 refresh_token 供后续刷新
         this.refreshToken = stored.refreshToken;
         this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-        console.log('[FeishuBitable] access_token 已过期，但 refresh_token 仍有效，将从文件恢复');
+        console.log('[FeishuBitable] access_token 已过期，refresh_token 仍有效');
       } else {
-        console.log('[FeishuBitable] 持久化 token 已全部过期，需要重新登录');
+        console.log('[FeishuBitable] 缓存 token 已全部过期，需要重新登录');
       }
     }
   }
@@ -110,7 +109,7 @@ class FeishuBitable {
     }
 
     // 持久化到文件，确保服务重启后 webhook 继续可用
-    saveToken({
+    await saveToken({
       accessToken: this.userAccessToken,
       accessTokenExpireAt: this.userTokenExpireTime,
       refreshToken: this.refreshToken || '',
@@ -149,7 +148,7 @@ class FeishuBitable {
     }
 
     // 刷新后持久化新的 token 到文件
-    saveToken({
+    await saveToken({
       accessToken: this.userAccessToken,
       accessTokenExpireAt: this.userTokenExpireTime,
       refreshToken: this.refreshToken || '',
@@ -162,18 +161,18 @@ class FeishuBitable {
     };
   }
 
-  /** 手动设置用户 token（供外部回填，如 dashboard 路由从 localStorage 恢复） */
+  /** 手动设置用户 token（供外部回填） */
   setUserAccessToken(token: string, expire: number): void {
     this.userAccessToken = token;
     this.userTokenExpireTime = expire;
-    // 持久化 access_token 更新（保留已有的 refresh_token）
+    // 持久化 access_token 更新（保留已有的 refresh_token，fire-and-forget）
     if (this.refreshToken) {
       saveToken({
         accessToken: token,
         accessTokenExpireAt: expire,
         refreshToken: this.refreshToken,
         refreshTokenExpireAt: this.refreshTokenExpireTime,
-      });
+      }).catch((err) => console.error('[FeishuBitable] 持久化 token 失败:', err));
     }
   }
 
@@ -183,8 +182,8 @@ class FeishuBitable {
     this.userTokenExpireTime = 0;
     this.refreshToken = null;
     this.refreshTokenExpireTime = 0;
-    // 同时删除持久化文件
-    deleteToken();
+    // 同时删除持久化文件（fire-and-forget）
+    deleteToken().catch((err) => console.error('[FeishuBitable] 删除 token 文件失败:', err));
   }
 
   /** 实例中是否存有有效用户 token（供 webhook 等场景检查） */
@@ -195,11 +194,42 @@ class FeishuBitable {
   /**
    * 确保用户 token 可用（供 webhook 调用）
    * - access_token 有效 → 直接返回 true
+   * - 冷启动无缓存 → 从数据库恢复 token
    * - access_token 过期但 refresh_token 有效 → 自动刷新后返回 true
    * - 都无效 → 返回 false
    */
   async ensureAuth(): Promise<boolean> {
     if (this.isUserAuthenticated()) return true;
+
+    // 冷启动兜底：内存缓存为空时从数据库恢复 token
+    if (!this.userAccessToken && !this.refreshToken) {
+      try {
+        const stored = await reloadToken();
+        if (stored) {
+          if (Date.now() < stored.accessTokenExpireAt) {
+            this.userAccessToken = stored.accessToken;
+            this.userTokenExpireTime = stored.accessTokenExpireAt;
+            this.refreshToken = stored.refreshToken;
+            this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
+            console.log('[FeishuBitable] 冷启动：从数据库恢复了有效的 user token');
+            return true;
+          } else if (Date.now() < stored.refreshTokenExpireAt) {
+            this.refreshToken = stored.refreshToken;
+            this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
+            console.log('[FeishuBitable] 冷启动：从数据库恢复了 refresh_token，尝试刷新...');
+          } else {
+            console.log('[FeishuBitable] 冷启动：数据库中 token 已全部过期');
+            return false;
+          }
+        } else {
+          console.log('[FeishuBitable] 冷启动：数据库中无 token');
+          return false;
+        }
+      } catch (err) {
+        console.error('[FeishuBitable] 冷启动从数据库加载 token 失败:', err);
+        return false;
+      }
+    }
 
     // access_token 过期，尝试用 refresh_token 刷新
     if (this.refreshToken && Date.now() < this.refreshTokenExpireTime) {
@@ -249,10 +279,25 @@ class FeishuBitable {
 
   /**
    * 获取当前有效的用户 access_token（供代理下载等场景使用）
-   * 会尝试自动刷新
+   * 会尝试从数据库恢复（冷启动兜底）并自动刷新
    */
   async getValidAccessToken(): Promise<string | null> {
     if (this.isUserAuthenticated()) return this.userAccessToken;
+
+    // 冷启动兜底
+    if (!this.userAccessToken && !this.refreshToken) {
+      try {
+        const stored = await reloadToken();
+        if (stored) {
+          this.userAccessToken = stored.accessToken;
+          this.userTokenExpireTime = stored.accessTokenExpireAt;
+          this.refreshToken = stored.refreshToken;
+          this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
+          if (Date.now() < stored.accessTokenExpireAt) return this.userAccessToken;
+        }
+      } catch { /* 继续尝试刷新 */ }
+    }
+
     if (this.refreshToken && Date.now() < this.refreshTokenExpireTime) {
       try {
         await this.refreshUserAccessToken();

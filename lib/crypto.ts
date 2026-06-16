@@ -6,10 +6,18 @@ const AUTH_TAG_LENGTH = 16; // 128-bit auth tag
 
 /**
  * 从 APP_SECRET 派生 256-bit 加密密钥
+ *
+ * ⚠️ 生产环境必须配置 APP_SECRET，否则使用弱 fallback 密钥
  */
 function getKey(): Buffer {
-  const secret = process.env.APP_SECRET || 'fallback-dev-key-change-me';
-  return crypto.createHash('sha256').update(secret).digest();
+  const secret = process.env.APP_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('生产环境必须配置 APP_SECRET 环境变量');
+    }
+    console.warn('[crypto] APP_SECRET 未配置，使用开发环境 fallback 密钥');
+  }
+  return crypto.createHash('sha256').update(secret || 'fallback-dev-key-change-me').digest();
 }
 
 /**

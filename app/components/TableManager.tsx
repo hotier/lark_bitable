@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ClipboardList, Sparkles } from 'lucide-react';
 import type { Table, FieldType } from '@/types';
 import { FIELD_TYPE_OPTIONS } from '@/types';
+import ConfirmDialog from '@/app/components/ConfirmDialog';
 
 interface TableManagerProps {
   selectedApp: { app_token: string; name: string } | null;
@@ -71,7 +72,7 @@ export default function TableManager({
     { name: '', type: 'text' },
   ]);
   const [creating, setCreating] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   if (!selectedApp) {
     return <NoAppSelected onSwitchToApps={onSwitchToApps} />;
@@ -160,35 +161,18 @@ export default function TableManager({
                     查看
                   </button>
 
-                  {deleteConfirm === table.table_id ? (
-                    <div className="flex items-center gap-1 animate-scale-in">
-                      <button
-                        onClick={() => onDeleteTable(table.table_id, table.name)}
-                        className="px-3 py-1.5 text-sm font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
-                      >
-                        确认
-                      </button>
-                      <button
-                        onClick={() => setDeleteConfirm(null)}
-                        className="px-3 py-1.5 text-sm font-medium text-neutral-500 hover:text-neutral-700 transition-colors"
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteConfirm(table.table_id);
-                      }}
-                      className="p-1.5 text-neutral-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                      title="删除数据表"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTarget({ id: table.table_id, name: table.name });
+                    }}
+                    className="p-1.5 text-neutral-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                    title="删除数据表"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
                 </div>
               </div>
             );
@@ -218,6 +202,21 @@ export default function TableManager({
           }
         }}
         appName={selectedApp.name}
+      />
+
+      {/* 删除确认弹窗 */}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除数据表"
+        message={<>确定要删除数据表 <span className="font-semibold text-neutral-800">「{deleteTarget?.name}」</span> 吗？此操作不可恢复，表内所有字段和记录将被一并删除。</>}
+        confirmLabel="删除"
+        onConfirm={() => {
+          if (deleteTarget) {
+            onDeleteTable(deleteTarget.id, deleteTarget.name);
+            setDeleteTarget(null);
+          }
+        }}
+        onCancel={() => setDeleteTarget(null)}
       />
     </div>
   );

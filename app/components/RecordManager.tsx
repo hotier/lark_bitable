@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History } from 'lucide-react';
 import type { Field, FieldType, BitableRecord } from '@/types';
+import ConfirmDialog from '@/app/components/ConfirmDialog';
 
 const TYPE_LABELS: Record<FieldType, string> = {
   text: '文本', number: '数字', date: '日期', single_select: '单选',
@@ -62,6 +63,8 @@ interface RecordManagerProps {
   onNextPage: () => void;
   onPrevPage: () => void;
   onGoToPage: (page: number) => void;
+  /** 可选：仅展示这些字段列（不传则展示全部 fields） */
+  displayFields?: Field[];
 }
 
 /** 未选择表时的空状态 */
@@ -451,9 +454,12 @@ export default function RecordManager({
   onNextPage,
   onPrevPage,
   onGoToPage,
+  displayFields,
 }: RecordManagerProps) {
   const [showForm, setShowForm] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  // 表格展示使用的字段列
+  const tableColumns = displayFields ?? fields;
 
   if (!_appToken || !_tableId) {
     return <NoTableSelected onSwitchToTables={onSwitchToTables} />;
@@ -464,7 +470,7 @@ export default function RecordManager({
   }
 
   return (
-    <div>
+    <div className="flex flex-col min-h-0 h-full">
       {/* 头部操作栏 */}
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
@@ -511,7 +517,7 @@ export default function RecordManager({
 
       {/* 字段类型概览 */}
       <div className="flex flex-wrap gap-2 mb-5">
-        {fields.slice(0, 8).map((f) => (
+        {tableColumns.slice(0, 8).map((f) => (
           <span
             key={f.field_id}
             className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border ${TYPE_COLORS[f.type] || 'bg-neutral-50 text-neutral-500 border-neutral-100'}`}
@@ -520,26 +526,19 @@ export default function RecordManager({
             {f.name}
           </span>
         ))}
-        {fields.length > 8 && (
-          <span className="text-xs text-neutral-400 px-2 py-1">+{fields.length - 8}</span>
+        {tableColumns.length > 8 && (
+          <span className="text-xs text-neutral-400 px-2 py-1">+{tableColumns.length - 8}</span>
         )}
       </div>
 
-      {/* 记录表格 */}
-      {records.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-neutral-400">
-          <svg className="w-12 h-12 mb-3 text-neutral-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-          </svg>
-          <p className="text-sm">暂无记录，点击「新增记录」开始</p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-md border border-neutral-100">
+      {/* 表格 —— 滑动条内联在表体内 */}
+      {records.length > 0 && (
+        <div className="flex-1 min-h-0 flex flex-col rounded-md border border-neutral-100">
           {/* 表头 */}
-          <div className="flex items-center gap-3 px-4 py-3 bg-neutral-50/80 text-xs font-semibold text-neutral-400 uppercase tracking-wider min-w-max"
-            style={{ minWidth: `${48 + fields.length * 120 + 80 + (fields.length + 2) * 12}px` }}>
+          <div className="flex items-center gap-3 px-4 py-3 bg-neutral-100 text-xs font-semibold text-neutral-400 uppercase tracking-wider min-w-max flex-shrink-0"
+            style={{ minWidth: `${48 + tableColumns.length * 120 + 80 + (tableColumns.length + 2) * 12}px` }}>
             <span className="w-8 shrink-0 text-left">#</span>
-            {fields.map((f) => (
+            {tableColumns.map((f) => (
               <span key={f.field_id} title={f.field_id} className="w-[120px] shrink-0">
                 {(() => { const Icon = TYPE_ICONS[f.type]; return Icon ? <Icon className="w-3 h-3 inline" /> : '?'; })()} {f.name}
               </span>
@@ -547,65 +546,47 @@ export default function RecordManager({
             <span className="w-20 shrink-0 text-right">操作</span>
           </div>
 
-          {/* 表体 */}
-          <div className="divide-y divide-neutral-50 min-w-max"
-            style={{ minWidth: `${48 + fields.length * 120 + 80 + (fields.length + 2) * 12}px` }}>
-            {records.map((record, idx) => (
-              <div
-                key={record.record_id}
-                className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50/50 transition-colors duration-150"
-              >
-                <span className="w-8 shrink-0 text-xs font-bold text-neutral-300 tabular-nums text-left">
-                  {String((currentPage - 1) * pageSize + idx + 1).padStart(2, '0')}
-                </span>
-                {fields.map((f) => {
-                  const val = getRecordFieldValue(record, f);
-                  return (
-                  <span key={f.field_id} className="w-[120px] shrink-0 text-sm truncate" title={renderFieldValue(val, f.type)}>
-                    {f.type === 'url' ? (
-                      <a
-                        href={(val as { link?: string })?.link || '#'}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-amber-600 hover:text-amber-700 underline truncate block"
-                      >
-                        {renderFieldValue(val, f.type)}
-                      </a>
-                    ) : f.type === 'file' ? (
-                      <AttachmentsCell
-                        value={val}
-                        tableId={_tableId}
-                        fieldId={f.field_id}
-                        recordId={record.record_id}
-                      />
-                    ) : (
-                      <span className="text-neutral-700">{renderFieldValue(val, f.type)}</span>
-                    )}
+          {/* 表体 —— 自带滚动条 */}
+          <div className="flex-1 min-h-0 overflow-auto">
+            <div className="divide-y divide-neutral-50 min-w-max"
+              style={{ minWidth: `${48 + tableColumns.length * 120 + 80 + (tableColumns.length + 2) * 12}px` }}>
+              {records.map((record, idx) => (
+                <div
+                  key={record.record_id}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50/50 transition-colors duration-150"
+                >
+                  <span className="w-8 shrink-0 text-xs font-bold text-neutral-300 tabular-nums text-left">
+                    {String((currentPage - 1) * pageSize + idx + 1).padStart(2, '0')}
                   </span>
-                  );
-                })}
-                <div className="w-20 shrink-0 flex justify-end">
-                  {deleteConfirm === record.record_id ? (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={async () => {
-                          await onDeleteRecord(record.record_id);
-                          setDeleteConfirm(null);
-                        }}
-                        className="px-2 py-1 text-[11px] font-semibold text-white bg-red-500 rounded-md hover:bg-red-600 transition-colors"
-                      >
-                        确认
-                      </button>
-                      <button
-                        onClick={() => setDeleteConfirm(null)}
-                        className="px-2 py-1 text-[11px] text-neutral-500 hover:text-neutral-700 transition-colors"
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
+                  {tableColumns.map((f) => {
+                    const val = getRecordFieldValue(record, f);
+                    return (
+                    <span key={f.field_id} className="w-[120px] shrink-0 text-sm truncate" title={renderFieldValue(val, f.type)}>
+                      {f.type === 'url' ? (
+                        <a
+                          href={(val as { link?: string })?.link || '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-amber-600 hover:text-amber-700 underline truncate block"
+                        >
+                          {renderFieldValue(val, f.type)}
+                        </a>
+                      ) : f.type === 'file' ? (
+                        <AttachmentsCell
+                          value={val}
+                          tableId={_tableId}
+                          fieldId={f.field_id}
+                          recordId={record.record_id}
+                        />
+                      ) : (
+                        <span className="text-neutral-700">{renderFieldValue(val, f.type)}</span>
+                      )}
+                    </span>
+                    );
+                  })}
+                  <div className="w-20 shrink-0 flex justify-end">
                     <button
-                      onClick={() => setDeleteConfirm(record.record_id)}
+                      onClick={() => setDeleteTarget(record.record_id)}
                       className="p-1.5 rounded-lg text-neutral-300 hover:text-red-500 hover:bg-red-50 transition-colors"
                       title="删除记录"
                     >
@@ -613,11 +594,21 @@ export default function RecordManager({
                         <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                       </svg>
                     </button>
-                  )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* 无记录空状态 */}
+      {records.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 text-neutral-400">
+          <svg className="w-12 h-12 mb-3 text-neutral-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+          </svg>
+          <p className="text-sm">暂无记录，点击「新增记录」开始</p>
         </div>
       )}
 
@@ -694,6 +685,21 @@ export default function RecordManager({
           </div>
         );
       })()}
+
+      {/* 删除确认弹窗 */}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除记录"
+        message={<>确定要删除记录 <span className="font-mono text-xs text-neutral-600 bg-neutral-100 px-1.5 py-0.5 rounded">{deleteTarget?.slice(-8)}</span> 吗？此操作不可恢复。</>}
+        confirmLabel="删除"
+        onConfirm={async () => {
+          if (deleteTarget) {
+            await onDeleteRecord(deleteTarget);
+            setDeleteTarget(null);
+          }
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

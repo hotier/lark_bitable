@@ -12,7 +12,7 @@ export async function GET(
 ) {
   const { token } = await params;
 
-  const entry = getPreviewToken(token);
+  const entry = await getPreviewToken(token);
   if (!entry) {
     return NextResponse.json(
       { error: '预览链接已过期或不存在，请刷新页面后重试' },

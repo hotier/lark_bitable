@@ -184,7 +184,7 @@ export interface ToastMessage {
   text: string;
 }
 
-// ====== 工作流自动化（localStorage 持久化）======
+// ====== 工作流自动化 ======
 
 /** CRUD 动作类型 */
 export type CrdAction = 'create_record' | 'read_records' | 'update_record' | 'delete_record';
@@ -266,6 +266,8 @@ export interface TriggerConfig {
   eventTableId?: string;
   /** 多维表格事件：监听的事件类型 */
   eventType?: 'record_created' | 'record_updated' | 'record_deleted';
+  /** Webhook 请求体重解析模板 — 用户在面板中编辑的 JSON，用于重新解析外部传入的原始 JSON，解析后的结果传递给下游节点 */
+  webhookBodyTemplate?: string;
 }
 
 /** 筛选节点配置 */

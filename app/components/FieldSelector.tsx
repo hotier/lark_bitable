@@ -147,11 +147,13 @@ interface FieldSelectorProps {
   selectedApp: App | null;
   selectedTableId: string;
   selectedFieldId: string;
+  /** 多选字段集合 */
+  selectedFieldIds: Set<string>;
   loadingTables: boolean;
   loadingFields: boolean;
   onSelectApp: (app: App) => void;
   onSelectTable: (table: Table) => void;
-  onSelectField: (field: Field) => void;
+  onToggleField: (field: Field) => void;
 }
 
 export default function FieldSelector({
@@ -161,14 +163,15 @@ export default function FieldSelector({
   selectedApp,
   selectedTableId,
   selectedFieldId,
+  selectedFieldIds,
   loadingTables,
   loadingFields,
   onSelectApp,
   onSelectTable,
-  onSelectField,
+  onToggleField,
 }: FieldSelectorProps) {
   const selectedTable = tables.find((t) => t.table_id === selectedTableId);
-  const selectedField = tableFields.find((f) => f.field_id === selectedFieldId);
+  const selectedCount = selectedFieldIds.size;
 
   const [openApp, setOpenApp] = useState(false);
   const [openTable, setOpenTable] = useState(false);
@@ -253,8 +256,8 @@ export default function FieldSelector({
       {/* 三级：字段 */}
       <SelectorDropdown
         open={openField}
-        label={selectedField?.name ?? ''}
-        placeholder="选择字段"
+        label={selectedCount > 0 ? `已选 ${selectedCount} 个字段` : ''}
+        placeholder="筛选字段"
         icon={<Type className="w-4 h-4" />}
         loading={loadingFields}
         disabled={!selectedTableId}
@@ -271,33 +274,50 @@ export default function FieldSelector({
         ) : tableFields.length === 0 && !loadingFields ? (
           <div className="px-4 py-6 text-center text-sm text-neutral-400">暂无字段</div>
         ) : (
-          tableFields.map((field) => (
-            <DropdownItem
-              key={field.field_id}
-              label={field.name}
-              sub={field.field_id}
-              icon={(() => { const Icon = FIELD_TYPE_ICON[field.type]; return Icon ? <Icon className="w-3.5 h-3.5" /> : <span>?</span>; })()}
-              active={selectedFieldId === field.field_id}
-              onClick={() => {
-                onSelectField(field);
-                setOpenField(false);
-              }}
-            />
-          ))
+          <>
+            {/* 全选/清空快捷操作 */}
+            <div className="px-3 pb-2 mb-1 border-b border-neutral-100">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { tableFields.forEach((f) => { if (!selectedFieldIds.has(f.field_id)) onToggleField(f); }); }}
+                  className="text-[11px] font-medium text-amber-600 hover:text-amber-700"
+                >
+                  全选
+                </button>
+                <span className="text-neutral-300">|</span>
+                <button
+                  onClick={() => { tableFields.forEach((f) => { if (selectedFieldIds.has(f.field_id)) onToggleField(f); }); }}
+                  className="text-[11px] font-medium text-neutral-400 hover:text-neutral-600"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+            {tableFields.map((field) => {
+              const checked = selectedFieldIds.has(field.field_id);
+              return (
+                <DropdownItem
+                  key={field.field_id}
+                  label={field.name}
+                  sub={field.field_id}
+                  icon={(() => { const Icon = FIELD_TYPE_ICON[field.type]; return Icon ? <Icon className="w-3.5 h-3.5" /> : <span>?</span>; })()}
+                  active={checked}
+                  onClick={() => onToggleField(field)}
+                />
+              );
+            })}
+          </>
         )}
       </SelectorDropdown>
 
       {/* 已选字段信息 */}
-      {selectedField && (
+      {selectedCount > 0 && (
         <div className="flex items-center gap-2 ml-2 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-md text-sm animate-scale-in">
-          <span className="w-5 h-5 rounded-md bg-emerald-200 flex items-center justify-center text-[10px] text-emerald-700">
-            ✓
+          <span className="w-5 h-5 rounded-md bg-emerald-200 flex items-center justify-center text-[10px] text-emerald-700 font-bold">
+            {selectedCount}
           </span>
-          <span className="text-emerald-700 font-medium truncate max-w-[120px]">
-            {selectedField.name}
-          </span>
-          <span className="text-[10px] text-emerald-500 font-mono hidden sm:inline">
-            {selectedField.field_id}
+          <span className="text-emerald-700 font-medium whitespace-nowrap">
+            个字段已筛选
           </span>
         </div>
       )}

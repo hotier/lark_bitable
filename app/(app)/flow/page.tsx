@@ -7,6 +7,7 @@ import {
   listApps, refreshApps, invalidateAppsCache,
   listTables, listFields, createRecord, listRecords,
   updateRecord, deleteApiRecord,
+  logout as apiLogout,
 } from '@/lib/api';
 import OAuthLogin from '@/app/components/OAuthLogin';
 import WorkflowManager from '@/app/components/WorkflowManager';
@@ -29,16 +30,7 @@ export default function FlowPage() {
   }, []);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('feishu_user_token');
-    const storedExpire = localStorage.getItem('feishu_token_expire');
-    let valid = false;
-    if (storedToken && storedExpire) {
-      const storedVal = parseInt(storedExpire);
-      const expireTime = storedVal > 10_000_000_000 ? storedVal : Date.now() + storedVal * 1000;
-      if (Date.now() < expireTime) { setIsAuthenticated(true); valid = true; }
-      else { localStorage.removeItem('feishu_user_token'); localStorage.removeItem('feishu_token_expire'); }
-    }
-    if (!valid) window.location.replace('/');
+    setIsAuthenticated(true); // AuthGuard 已验证
   }, []);
 
   useEffect(() => {
@@ -50,9 +42,8 @@ export default function FlowPage() {
     }
   }, [isAuthenticated, apps.length]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('feishu_user_token');
-    localStorage.removeItem('feishu_token_expire');
+  const handleLogout = async () => {
+    await apiLogout();
     invalidateAppsCache();
     setIsAuthenticated(false); setApps([]);
     addToast('info', '已退出登录');
@@ -113,7 +104,7 @@ export default function FlowPage() {
       </header>
 
       <div className="flex-1 overflow-auto">
-        <div className="max-w-[1200px] mx-auto px-6 py-6">
+        <div className="px-6 py-6">
           <WorkflowManager
             apps={apps}
             onListTables={handleListTablesForNode} onListFields={listFields}

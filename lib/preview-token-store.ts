@@ -1,8 +1,23 @@
-import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
+/**
+ * 预览参数短 Token 存储（PostgreSQL + 内存缓存）
+ *
+ * 将文件预览参数映射为短 ID，避免长参数出现在 URL 中。
+ * 兼容 Vercel serverless ephemeral filesystem。
+ *
+ * - 数据库持久化：`preview_tokens` 表
+ * - 内存缓存层：零延迟读取，冷启动后首次访问从 DB 加载
+ * - 去重加速：fileToken → id 的额外映射表 O(1) 查找
+ * - 定期清理：取数据时自动清除过期条目
+ *
+ * TTL：30 分钟（与飞书临时下载链接保持一致）
+ */
 
-interface TokenEntry {
+import crypto from 'crypto';
+import { sql } from '@/lib/db';
+
+const TTL_MS = 30 * 60 * 1000; // 30 分钟
+
+export interface TokenEntry {
   fileToken: string;
   tableId?: string;
   fieldId?: string;
@@ -11,79 +26,139 @@ interface TokenEntry {
   createdAt: number;
 }
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const STORE_FILE = path.join(DATA_DIR, 'preview-tokens.json');
+// ── 内存缓存层 ──
+let store: Map<string, TokenEntry> | undefined;
+let fileTokenIndex: Map<string, string> | undefined; // fileToken → id，加速去重
 
-// 30 分钟过期（飞书临时下载链接也会过期）
-const TTL_MS = 30 * 60 * 1000;
+// ── 写锁 ──
+let writePromise: Promise<void> = Promise.resolve();
 
-/** 确保 data 目录存在 */
-function ensureDir(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = writePromise;
+  let release: () => void;
+  writePromise = new Promise<void>((r) => { release = r; });
+  return prev.then(fn).finally(() => release!());
 }
 
-/** 读取存储（自动清除过期条目） */
-function readStore(): Map<string, TokenEntry> {
-  ensureDir();
-  const store = new Map<string, TokenEntry>();
+// ── DB 操作 ──
+
+async function loadFromDb(): Promise<Map<string, TokenEntry>> {
+  const result = new Map<string, TokenEntry>();
   try {
-    if (fs.existsSync(STORE_FILE)) {
-      const raw = fs.readFileSync(STORE_FILE, 'utf-8');
-      const entries: [string, TokenEntry][] = JSON.parse(raw);
-      const now = Date.now();
-      for (const [id, entry] of entries) {
-        if (now - entry.createdAt <= TTL_MS) {
-          store.set(id, entry);
-        }
+    const now = Date.now();
+    const rows = await sql()`
+      SELECT id, file_token, table_id, field_id, record_id, file_name, created_at
+      FROM preview_tokens
+      ORDER BY created_at ASC
+    `;
+    for (const r of rows) {
+      const createdAt = Number(r.created_at);
+      if (now - createdAt <= TTL_MS) {
+        result.set(r.id as string, {
+          fileToken: r.file_token as string,
+          tableId: (r.table_id as string) || undefined,
+          fieldId: (r.field_id as string) || undefined,
+          recordId: (r.record_id as string) || undefined,
+          fileName: r.file_name as string,
+          createdAt,
+        });
       }
     }
-  } catch {
-    // 文件损坏或不存在，从空开始
+  } catch (err) {
+    console.error('[preview-token-store] 从数据库加载失败:', err);
   }
-  return store;
+  return result;
 }
 
-/** 写入存储 */
-function writeStore(store: Map<string, TokenEntry>): void {
-  ensureDir();
-  const entries = Array.from(store.entries());
-  // 原子写入：先写临时文件再 rename
-  const tmpFile = STORE_FILE + '.tmp';
-  fs.writeFileSync(tmpFile, JSON.stringify(entries), 'utf-8');
-  fs.renameSync(tmpFile, STORE_FILE);
+async function saveEntryToDb(id: string, entry: TokenEntry): Promise<void> {
+  await sql()`
+    INSERT INTO preview_tokens (id, file_token, table_id, field_id, record_id, file_name, created_at)
+    VALUES (${id}, ${entry.fileToken}, ${entry.tableId ?? null},
+      ${entry.fieldId ?? null}, ${entry.recordId ?? null},
+      ${entry.fileName}, ${entry.createdAt})
+    ON CONFLICT (id) DO NOTHING
+  `;
 }
 
-/** 生成 8 位随机短 ID */
+async function deleteExpiredFromDb(now: number): Promise<void> {
+  await sql()`
+    DELETE FROM preview_tokens
+    WHERE ${now} - created_at > ${TTL_MS}
+  `;
+}
+
+// ── 初始化 ──
+
+async function ensureStore(): Promise<void> {
+  if (store) return;
+  store = await loadFromDb();
+  // 构建 fileToken → id 索引
+  fileTokenIndex = new Map();
+  for (const [id, entry] of store) {
+    fileTokenIndex.set(entry.fileToken, id);
+  }
+}
+
+// ── 内部辅助 ──
+
 function generateId(): string {
   return crypto.randomBytes(6).toString('base64url').slice(0, 8);
 }
 
-/** 存储文件参数并返回短 ID */
-export function savePreviewToken(params: Omit<TokenEntry, 'createdAt'>): string {
-  const store = readStore();
-
-  // 去重：相同 fileToken 复用已有 ID
+function cleanExpired(): void {
+  if (!store) return;
+  const now = Date.now();
   for (const [id, entry] of store) {
-    if (entry.fileToken === params.fileToken) return id;
+    if (now - entry.createdAt > TTL_MS) {
+      store.delete(id);
+      fileTokenIndex?.delete(entry.fileToken);
+    }
   }
+}
+
+// ── 公开 API ──
+
+/**
+ * 存储文件参数并返回短 ID（去重：相同 fileToken 复用已有 ID）
+ */
+export async function savePreviewToken(params: Omit<TokenEntry, 'createdAt'>): Promise<string> {
+  await ensureStore();
+  cleanExpired();
+
+  // O(1) 去重查找
+  const existingId = fileTokenIndex?.get(params.fileToken);
+  if (existingId) return existingId;
 
   const id = generateId();
-  store.set(id, { ...params, createdAt: Date.now() });
-  writeStore(store);
+  const entry: TokenEntry = { ...params, createdAt: Date.now() };
+  store!.set(id, entry);
+  fileTokenIndex?.set(params.fileToken, id);
+
+  // 异步写 DB（不阻塞返回）
+  withWriteLock(() => saveEntryToDb(id, entry)).catch((err) =>
+    console.error('[preview-token-store] 写入数据库失败:', err)
+  );
+
   return id;
 }
 
-/** 根据短 ID 获取文件参数，不存在或过期返回 null */
-export function getPreviewToken(id: string): TokenEntry | null {
-  const store = readStore();
-  const entry = store.get(id);
+/**
+ * 根据短 ID 获取文件参数，不存在或过期返回 null
+ */
+export async function getPreviewToken(id: string): Promise<TokenEntry | null> {
+  await ensureStore();
+  const entry = store?.get(id);
   if (!entry) return null;
+
   if (Date.now() - entry.createdAt > TTL_MS) {
-    store.delete(id);
-    writeStore(store);
+    store?.delete(id);
+    fileTokenIndex?.delete(entry.fileToken);
+    // 异步清理 DB 过期数据（概率触发，减少开销）
+    if (Math.random() < 0.1) {
+      withWriteLock(() => deleteExpiredFromDb(Date.now())).catch(() => {});
+    }
     return null;
   }
+
   return entry;
 }

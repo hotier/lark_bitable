@@ -5,6 +5,23 @@ import { useRouter } from 'next/navigation';
 import { Zap, Settings, ClipboardList, Link, Clock, Calendar, Filter, Timer, X, Trash2, Plus, Search, Pencil, AlertTriangle, Globe, MessageSquare, Send, GripVertical, Copy, Play, Type, Hash, CircleDot, CheckSquare, Check, User, Paperclip, Phone, Mail, Sigma, UserPlus, History, Monitor, Webhook, ArrowUpLeft, Pin, Table } from 'lucide-react';
 import type { Field, Workflow, WorkflowNode, NodeKind, CrdAction, FieldMapping, FilterCondition, FilterOp, App, Table, TriggerKind } from '@/types';
 import { CRUD_ACTION_META, TRIGGER_KIND_META } from '@/types';
+import ConfirmDialog from '@/app/components/ConfirmDialog';
+
+/** 递归扁平化对象 key：{a:{b:1}, c:2} → ["a.b","c"] */
+function flattenKeys(obj: unknown, prefix = ''): string[] {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return [];
+  const record = obj as Record<string, unknown>;
+  const keys: string[] = [];
+  for (const [k, v] of Object.entries(record)) {
+    const fullKey = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      keys.push(...flattenKeys(v, fullKey));
+    } else {
+      keys.push(fullKey);
+    }
+  }
+  return keys;
+}
 
 // ====== 图标映射 ======
 const ACTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -678,16 +695,32 @@ function buildVariableOptions(
 ): VariableOption[] {
   const options = [...BASE_VARIABLE_OPTIONS];
 
-  // 收集 Webhook 参数（所有节点的 webhook 引用）
-  const wpKeys = collectWebhookParams(allNodes);
-  if (wpKeys.length > 0) {
-    wpKeys.forEach((k) => {
-      options.push({ id: `webhook:${k}`, label: `Webhook丨${k}`, desc: '来自 Webhook 触发的 content 字段', group: 'Webhook 触发' });
+  // 从 trigger 节点的 webhookBodyTemplate JSON 解析 Webhook 变量
+  const triggerNode = allNodes.find((n) => n.type === 'trigger');
+  const template = triggerNode?.triggerConfig?.webhookBodyTemplate ?? '';
+  const templateKeys: string[] = (() => {
+    if (!template.trim()) return [];
+    try {
+      const obj = JSON.parse(template);
+      const content = obj?.content ?? obj;
+      return flattenKeys(content);
+    } catch {
+      return [];
+    }
+  })();
+
+  if (templateKeys.length > 0) {
+    templateKeys.forEach((k) => {
+      options.push({ id: `webhook:${k}`, label: `Webhook 触发丨${k}`, desc: '来自重解析后的 Webhook JSON', group: 'Webhook 触发' });
     });
   } else {
-    // 只要工作流中有 trigger 节点，就给一个通用的 Webhook 占位
-    const hasTrigger = allNodes.some((n) => n.type === 'trigger');
-    if (hasTrigger) {
+    // 回退：从已有节点引用中收集
+    const wpKeys = collectWebhookParams(allNodes);
+    if (wpKeys.length > 0) {
+      wpKeys.forEach((k) => {
+        options.push({ id: `webhook:${k}`, label: `Webhook 触发丨${k}`, desc: '来自 Webhook 触发的 content 字段', group: 'Webhook 触发' });
+      });
+    } else if (triggerNode) {
       options.push({ id: 'webhook_payload', label: 'Webhook 触发', desc: '引用 Webhook content 中的字段', group: 'Webhook 触发' });
     }
   }
@@ -798,7 +831,7 @@ function FieldMappingRow({
           placeholder={
             mapping.source === 'manual' ? '请输入值' :
             mapping.source === 'variable' ? '变量引用' :
-            'content.xxx'
+            'Webhook 变量 (如 time)'
           }
           readOnly={mapping.source === 'variable'}
           className={`w-full pl-3 pr-9 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-200 ${
@@ -830,11 +863,11 @@ function FieldMappingRow({
             <div className="absolute z-50 mt-1.5 w-full bg-white border border-neutral-200 rounded-md shadow-lg overflow-hidden max-h-72 overflow-y-auto">
               <VariableGroupPanel
                 variableOptions={variableOptions}
-                selectedKey={mapping.source === 'variable' ? mapping.variableKey : mapping.source === 'webhook' ? mapping.webhookKey : undefined}
+                selectedKey={mapping.source === 'variable' ? mapping.variableKey : mapping.source === 'webhook' ? `webhook:${mapping.webhookKey}` : undefined}
                 onSelect={(v) => {
                   if (v.id.startsWith('webhook:')) {
                     const key = v.id.slice('webhook:'.length);
-                    onChange({ source: 'webhook', webhookKey: `content.${key}`, manualValue: '', variableKey: '', variableLabel: '' });
+                    onChange({ source: 'webhook', webhookKey: key, manualValue: '', variableKey: '', variableLabel: '' });
                   } else if (v.group === 'Webhook 触发') {
                     onChange({ source: 'webhook', webhookKey: 'content.', manualValue: '', variableKey: '', variableLabel: '' });
                   } else if (v.id.startsWith('prev:') || v.group === '系统变量') {
@@ -1304,12 +1337,10 @@ function collectWebhookParams(nodes: WorkflowNode[]): string[] {
 
 function TriggerConfigPanel({
   node,
-  allNodes,
   onSave,
   onClose,
 }: {
   node: WorkflowNode;
-  allNodes: WorkflowNode[];
   onSave: (config: import('@/types').TriggerConfig) => void;
   onClose: () => void;
 }) {
@@ -1318,9 +1349,23 @@ function TriggerConfigPanel({
   const [secretToken, setSecretToken] = useState(tcfg.secretToken);
   const [cronExpression, setCronExpression] = useState(tcfg.cronExpression || '');
   const [copied, setCopied] = useState(false);
+  const [jsonTemplate, setJsonTemplate] = useState(tcfg.webhookBodyTemplate || '');
+  const [jsonError, setJsonError] = useState('');
+
+  // 从 JSON template 提取所有扁平化的 key（content 层级的键）
+  const parsedKeys: string[] = (() => {
+    if (!jsonTemplate.trim()) return [];
+    try {
+      const obj = JSON.parse(jsonTemplate);
+      const content = obj?.content ?? obj;
+      return flattenKeys(content);
+    } catch {
+      return [];
+    }
+  })();
 
   const fullUrl = resolveWebhookUrl(tcfg.webhookUrl);
-  const webhookParams = collectWebhookParams(allNodes);
+
 
   const copyUrl = () => {
     navigator.clipboard.writeText(fullUrl).then(() => {
@@ -1334,7 +1379,44 @@ function TriggerConfigPanel({
     triggerKind,
     secretToken: secretToken.trim(),
     cronExpression: triggerKind === 'scheduled' ? cronExpression : undefined,
+    webhookBodyTemplate: jsonTemplate,
   });
+
+  const handleJsonChange = (value: string) => {
+    setJsonTemplate(value);
+    if (!value.trim()) {
+      setJsonError('');
+      return;
+    }
+    try {
+      JSON.parse(value);
+      setJsonError('');
+    } catch (e: any) {
+      setJsonError(e.message);
+    }
+  };
+
+  // 快捷插入键值对到 content 中
+  const insertKeyValue = () => {
+    const key = prompt('请输入键名 (key)：');
+    if (!key) return;
+    const val = prompt('请输入默认值（可选）：', '') || '...';
+    try {
+      const obj = jsonTemplate.trim() ? JSON.parse(jsonTemplate) : { msg_type: 'text', content: {} };
+      if (!obj.content || typeof obj.content !== 'object') {
+        obj.content = {};
+      }
+      obj.content[key] = val;
+      const formatted = JSON.stringify(obj, null, 2);
+      setJsonTemplate(formatted);
+      setJsonError('');
+    } catch {
+      // 如果当前 JSON 不合法，构建新的
+      const obj = { msg_type: 'text', content: { [key]: val } };
+      setJsonTemplate(JSON.stringify(obj, null, 2));
+      setJsonError('');
+    }
+  };
 
   return (
     <>
@@ -1393,20 +1475,84 @@ function TriggerConfigPanel({
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">请求格式</label>
-                <div className="bg-neutral-50 border border-neutral-100 rounded-md p-3">
-                  <div className="text-[10px] text-neutral-400 mb-1.5">POST JSON 请求体格式：</div>
-                  <pre className="text-xs text-neutral-600 font-mono leading-relaxed whitespace-pre-wrap bg-white border border-neutral-100 rounded-lg p-3">{`{
-  "msg_type": "text",
-  "content": {
-    "字段名": "值",
-    ...
-  }
-}`}</pre>
-                  <div className="text-[10px] text-neutral-400 mt-2">
-                    数据字段放在 <code className="px-1 py-0.5 bg-neutral-100 rounded text-neutral-500">content</code> 中，下游操作通过 <code className="px-1 py-0.5 bg-neutral-100 rounded text-neutral-500">content.字段名</code> 引用
-                  </div>
+                <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">
+                  POST JSON 重解析 <span className="font-normal text-neutral-300">（编辑 JSON 重新解析外部传入的数据）</span>
+                </label>
+                <p className="text-[11px] text-neutral-400 mb-3">
+                  外部 POST 的原始 JSON 可能无法被飞书直接解析。在此定义重解析后的 JSON 结构，解析后的键值将自动作为下游节点的变量选项。
+                </p>
+
+                {/* JSON 编辑器 */}
+                <textarea
+                  value={jsonTemplate}
+                  onChange={(e) => handleJsonChange(e.target.value)}
+                  placeholder={`{\n  "msg_type": "text",\n  "content": {\n    "order_id": "...",\n    "customer_name": "...",\n    "amount": "..."\n  }\n}`}
+                  rows={jsonTemplate ? Math.max(6, jsonTemplate.split('\n').length + 1) : 6}
+                  className={`w-full px-3 py-2.5 border rounded-lg text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 ${
+                    jsonError
+                      ? 'border-red-200 focus:ring-red-200 focus:border-red-300 bg-red-50/30'
+                      : 'border-neutral-200 focus:ring-amber-200 focus:border-amber-300'
+                  }`}
+                  spellCheck={false}
+                />
+                {jsonError && (
+                  <p className="text-[11px] text-red-400 mt-1">JSON 格式错误：{jsonError}</p>
+                )}
+
+                {/* 快捷操作 */}
+                <div className="flex items-center gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={insertKeyValue}
+                    className="text-[11px] px-2.5 py-1 rounded-md bg-neutral-50 hover:bg-amber-50 text-neutral-500 hover:text-amber-600 border border-neutral-200 hover:border-amber-200 transition-colors flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" /> 快捷添加键值
+                  </button>
+                  {!jsonTemplate.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const defaultJson = JSON.stringify({ msg_type: 'text', content: {} }, null, 2);
+                        setJsonTemplate(defaultJson);
+                        setJsonError('');
+                      }}
+                      className="text-[11px] px-2.5 py-1 rounded-md bg-neutral-50 hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600 border border-neutral-200 transition-colors"
+                    >
+                      使用模板
+                    </button>
+                  )}
                 </div>
+
+                {/* 解析出的 keys */}
+                {parsedKeys.length > 0 && (
+                  <div className="mt-3">
+                    <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">
+                      已解析变量 <span className="font-normal text-emerald-400">（可直接在下游节点中引用）</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {parsedKeys.map((key) => (
+                        <span
+                          key={key}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-md text-xs"
+                        >
+                          <span className="text-emerald-700 font-medium">{key}</span>
+                          <span className="text-emerald-400">→</span>
+                          <code className="text-[10px] text-emerald-500 font-mono">{'{' + key + '}'}</code>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* JSON 预览（只读美化） */}
+                {jsonTemplate.trim() && !jsonError && (
+                  <div className="bg-neutral-50 border border-neutral-100 rounded-md p-3 mt-3">
+                    <div className="text-[10px] text-neutral-400 mb-1.5">重解析后传递给下游的 JSON：</div>
+                    <pre className="text-xs text-neutral-600 font-mono leading-relaxed whitespace-pre-wrap bg-white border border-neutral-100 rounded-lg p-3">
+                      {jsonTemplate}
+                    </pre>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1415,19 +1561,6 @@ function TriggerConfigPanel({
                 <p className="text-[11px] text-neutral-400 mt-1.5">设置后可验证请求头 <code className="px-1 py-0.5 bg-neutral-100 rounded text-neutral-500">X-Webhook-Token</code> 的值</p>
               </div>
 
-              <div>
-                <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">接收参数</label>
-                {webhookParams.length === 0 ? (
-                  <div className="text-sm text-neutral-400 py-3 text-center border border-dashed border-neutral-200 rounded-md">暂无参数 — 在下游操作的字段映射中引用 Webhook 变量即可自动生成</div>
-                ) : (
-                  <div className="border border-neutral-100 rounded-md overflow-hidden">
-                    <div className="grid grid-cols-2 px-4 py-2 bg-neutral-50 text-[10px] font-semibold text-neutral-400 uppercase tracking-wider"><span>参数名</span><span>引用方式</span></div>
-                    {webhookParams.map((p) => (
-                      <div key={p} className="grid grid-cols-2 px-4 py-2.5 border-t border-neutral-50 text-sm"><span className="text-neutral-700 font-medium">{p}</span><code className="text-xs text-amber-500 font-mono bg-amber-50/50 px-1.5 py-0.5 rounded self-start">content.{p}</code></div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </>
           )}
 
@@ -1530,7 +1663,7 @@ function FilterConfigPanel({
           </div>
           {webhookContentKeys.length > 0 && (
             <div className="text-xs text-neutral-400">
-              可用变量：{webhookContentKeys.map((k) => <code key={k} className="mx-1 px-1 py-0.5 bg-purple-50 text-purple-600 rounded">content.{k}</code>)}
+              可用变量：{webhookContentKeys.map((k) => <code key={k} className="mx-1 px-1 py-0.5 bg-purple-50 text-purple-600 rounded">{'{' + k + '}'}</code>)}
             </div>
           )}
         </div>
@@ -2577,40 +2710,14 @@ export default function WorkflowManager({
       </div>
 
       {/* ====== 删除确认弹窗 ====== */}
-      {deleteConfirmId && (
-        <>
-          <div className="fixed inset-0 bg-black/30 z-50" onClick={cancelDeleteWorkflow} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center animate-scale-in">
-            <div className="bg-white rounded-lg shadow-xl w-[400px] p-6 mx-4">
-              <div className="flex items-start gap-3 mb-5">
-                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
-                  <AlertTriangle className="w-5 h-5 text-red-500" />
-                </div>
-                <div>
-                  <h3 className="text-base font-semibold text-neutral-800">确认删除</h3>
-                  <p className="text-sm text-neutral-500 mt-1">
-                    确定要删除 <span className="font-medium text-neutral-700">"{workflows.find((w) => w.id === deleteConfirmId)?.name}"</span> 吗？此操作不可恢复。
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3 justify-end">
-                <button
-                  onClick={cancelDeleteWorkflow}
-                  className="px-4 py-2 text-sm font-medium text-neutral-600 bg-neutral-100 hover:bg-neutral-200 rounded-md transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={confirmDeleteWorkflow}
-                  className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
-                >
-                  删除
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+      <ConfirmDialog
+        open={deleteConfirmId !== null}
+        title="删除工作流"
+        message={<>确定要删除工作流 <span className="font-semibold text-neutral-800">「{workflows.find((w) => w.id === deleteConfirmId)?.name}」</span> 吗？此操作不可恢复。</>}
+        confirmLabel="删除"
+        onConfirm={confirmDeleteWorkflow}
+        onCancel={cancelDeleteWorkflow}
+      />
       </>
     );
   }
@@ -2886,7 +2993,6 @@ export default function WorkflowManager({
       {configNode && configNode.type === 'trigger' && configNode.triggerConfig && (
         <TriggerConfigPanel
           node={configNode}
-          allNodes={activeWorkflow?.nodes ?? []}
           onSave={(cfg) => handleSaveTriggerConfig(configNode.id, cfg)}
           onClose={() => setConfigNodeId(null)}
         />
@@ -2930,40 +3036,14 @@ export default function WorkflowManager({
       )}
 
       {/* ====== 删除确认弹窗 ====== */}
-      {deleteConfirmId && (
-        <>
-          <div className="fixed inset-0 bg-black/30 z-50" onClick={cancelDeleteWorkflow} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center animate-scale-in">
-            <div className="bg-white rounded-lg shadow-xl w-[400px] p-6 mx-4">
-              <div className="flex items-start gap-3 mb-5">
-                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
-                  <AlertTriangle className="w-5 h-5 text-red-500" />
-                </div>
-                <div>
-                  <h3 className="text-base font-semibold text-neutral-800">确认删除</h3>
-                  <p className="text-sm text-neutral-500 mt-1">
-                    确定要删除 <span className="font-medium text-neutral-700">"{workflows.find((w) => w.id === deleteConfirmId)?.name}"</span> 吗？此操作不可恢复。
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3 justify-end">
-                <button
-                  onClick={cancelDeleteWorkflow}
-                  className="px-4 py-2 text-sm font-medium text-neutral-600 bg-neutral-100 hover:bg-neutral-200 rounded-md transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={confirmDeleteWorkflow}
-                  className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
-                >
-                  删除
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+      <ConfirmDialog
+        open={deleteConfirmId !== null}
+        title="删除工作流"
+        message={<>确定要删除工作流 <span className="font-semibold text-neutral-800">「{workflows.find((w) => w.id === deleteConfirmId)?.name}」</span> 吗？此操作不可恢复。</>}
+        confirmLabel="删除"
+        onConfirm={confirmDeleteWorkflow}
+        onCancel={cancelDeleteWorkflow}
+      />
 
       {/* ====== Toast 提示 ====== */}
       {toast && (

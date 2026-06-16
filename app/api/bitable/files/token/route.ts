@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '缺少参数: file_token' }, { status: 400 });
     }
 
-    const id = savePreviewToken({
+    const id = await savePreviewToken({
       fileToken: file_token,
       tableId: table_id || undefined,
       fieldId: field_id || undefined,
