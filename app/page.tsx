@@ -331,7 +331,7 @@ export default function RootPage() {
 
       {/* ═══════════ Footer ═══════════ */}
       <footer className="relative py-5 text-center">
-        <span className="text-xs text-neutral-300 tracking-widest uppercase">Flybook Workspace · Lark API Manager</span>
+        <span className="text-xs text-neutral-300 tracking-widest uppercase">lark workspace</span>
       </footer>
     </div>
   );

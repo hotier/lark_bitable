@@ -2,7 +2,7 @@
 
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { Table2, Workflow, FileText, Grid3X3 } from 'lucide-react';
+import { Table2, Workflow, FileText, Grid3X3, Sparkles } from 'lucide-react';
 
 const NAV_ITEMS = [
   {
@@ -39,18 +39,20 @@ export default function Sidebar() {
       className="fixed inset-y-0 left-0 z-30 flex flex-col"
       style={{ width: 'var(--sidebar-width)', background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)' }}
     >
-      {/* Logo */}
-      <div className="flex items-center gap-3 h-14 px-5" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div
-          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-          style={{ background: 'var(--accent)', color: '#fff' }}
-        >
-          <Table2 className="w-3.5 h-3.5" />
+      {/* Logo — 与首页保持一致的品牌标识，点击返回首页 */}
+      <Link
+        href="/"
+        className="flex items-center gap-3 h-14 px-5 hover:opacity-80 transition-opacity"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 text-white flex items-center justify-center flex-shrink-0 shadow shadow-amber-500/25">
+          <Sparkles className="w-3.5 h-3.5" />
         </div>
-        <span className="text-sm font-semibold tracking-tight text-neutral-900">
-          多维表格
-        </span>
-      </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-bold text-neutral-900 tracking-tight">飞书工作台</span>
+          <span className="text-[10px] text-neutral-300 tracking-wider">WORKSPACE</span>
+        </div>
+      </Link>
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1">

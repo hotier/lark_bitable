@@ -2605,22 +2605,20 @@ export default function WorkflowManager({
 
         {/* 卡片网格 */}
         <div className="grid grid-cols-4 gap-5">
-          {/* 新建卡片（第一个） */}
-          {workflows.length > 0 && (
-            <button
-              onClick={() => {
-                const existingNames = new Set(workflows.map((w) => w.name));
-                const wf = makeDefaultWorkflow(existingNames);
-                persist([wf, ...workflows]);
-              }}
-              className="group rounded-lg border-2 border-dashed border-neutral-200 hover:border-amber-300 hover:bg-amber-50/30 p-8 flex flex-col items-center justify-center gap-3 transition-all min-h-[180px] w-full"
-            >
-              <div className="w-12 h-12 rounded-md bg-neutral-100 group-hover:bg-amber-100 flex items-center justify-center text-neutral-400 group-hover:text-amber-500 transition-colors">
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4"/></svg>
-              </div>
-              <span className="text-sm font-medium text-neutral-400 group-hover:text-amber-600 transition-colors">+ 新建机器人指令</span>
-            </button>
-          )}
+          {/* 新建卡片（始终显示） */}
+          <button
+            onClick={() => {
+              const existingNames = new Set(workflows.map((w) => w.name));
+              const wf = makeDefaultWorkflow(existingNames);
+              persist([wf, ...workflows]);
+            }}
+            className="group rounded-lg border-2 border-dashed border-neutral-200 hover:border-amber-300 hover:bg-amber-50/30 p-8 flex flex-col items-center justify-center gap-3 transition-all min-h-[180px] w-full"
+          >
+            <div className="w-12 h-12 rounded-md bg-neutral-100 group-hover:bg-amber-100 flex items-center justify-center text-neutral-400 group-hover:text-amber-500 transition-colors">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4"/></svg>
+            </div>
+            <span className="text-sm font-medium text-neutral-400 group-hover:text-amber-600 transition-colors">+ 新建机器人指令</span>
+          </button>
 
           {/* 工作流卡片 */}
           {workflows.map((wf) => {
