@@ -56,9 +56,12 @@ export async function POST(request: Request) {
 
     // ====== 认证相关操作（无需 token） ======
 
-    /* 获取飞书 OAuth URL */
+    /* 获取飞书 OAuth URL（自动从请求头推导 redirect_uri，无需手动配置环境变量） */
     if (action === 'getOAuthUrl') {
-      return NextResponse.json({ success: true, data: { url: bitableService.getOAuthUrl() } });
+      const proto = request.headers.get('x-forwarded-proto') || 'http';
+      const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || 'localhost:3000';
+      const redirectUri = `${proto}://${host}/api/bitable/oauth/callback`;
+      return NextResponse.json({ success: true, data: { url: bitableService.getOAuthUrl(undefined, redirectUri) } });
     }
 
     /* 检查认证状态（exchangeAuthCode 现等同于 authStatus，向后兼容） */

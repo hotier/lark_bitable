@@ -51,8 +51,6 @@ class FeishuBitable {
   private refreshTokenExpireTime = 0;
 
   private appId = process.env.APP_ID || '';
-  private redirectUri =
-    process.env.REDIRECT_URI || 'http://localhost:3000/api/bitable/oauth/callback';
 
   constructor() {
     this.client = new Client({
@@ -248,10 +246,16 @@ class FeishuBitable {
 
   // ====== OAuth ======
 
-  getOAuthUrl(state?: string): string {
+  /**
+   * 获取飞书 OAuth 授权 URL
+   * @param state 可选：自定义 state，OAuth 回调时原样返回
+   * @param redirectUri 可选：回调地址，不传则用环境变量 REDIRECT_URI 或自动推导
+   */
+  getOAuthUrl(state?: string, redirectUri?: string): string {
+    const uri = redirectUri || process.env.REDIRECT_URI || 'http://localhost:3000/api/bitable/oauth/callback';
     const params = new URLSearchParams({
       client_id: this.appId,
-      redirect_uri: this.redirectUri,
+      redirect_uri: uri,
       response_type: 'code',
       scope:
         'bitable:app bitable:app:readonly drive:drive drive:file docx:document docx:document:readonly sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete offline_access',
