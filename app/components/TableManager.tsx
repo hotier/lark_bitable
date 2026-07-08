@@ -296,7 +296,7 @@ function CreateFormSidebar({
                 <select
                   value={field.type}
                   onChange={(e) => updateField(index, { type: e.target.value as FieldType })}
-                  className="px-3 py-2 text-sm bg-white border border-neutral-200 rounded-md focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all outline-none text-neutral-600 cursor-pointer"
+                  className="px-3 py-2 text-sm bg-white border border-neutral-200 rounded-md focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all outline-none text-neutral-600 cursor-pointer truncate"
                 >
                   {FIELD_TYPE_OPTIONS.map((ft) => (
                     <option key={ft.value} value={ft.value}>

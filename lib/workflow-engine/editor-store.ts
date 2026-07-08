@@ -285,7 +285,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
     const triggerId = idGen();
     const endId = idGen();
 
-    const triggerNode = createNodeBase('trigger', triggerId, { x: 400, y: 80 }, 'Webhook 触发', {
+    const triggerNode = createNodeBase('trigger', triggerId, { x: 400, y: 80 }, '触发器', {
       triggerKind: 'webhook',
       webhookUrl: `/api/trigger-webhook/${triggerId}`,
     });

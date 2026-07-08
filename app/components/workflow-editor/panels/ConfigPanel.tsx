@@ -24,6 +24,126 @@ function idGen(): string {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** 将存储的相对路径解析为完整 URL（自动跟随当前域名） */
+function resolveWebhookUrl(path: string): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  return path.startsWith('http') ? path : `${origin}${path}`;
+}
+
+type ScheduleFreq = 'minute' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom';
+
+/** 将 Cron 表达式解析为友好的频率配置（无法识别的模式归为 custom） */
+function parseCron(cron: string): { freq: ScheduleFreq; time: string; weekday: number; monthDay: number } {
+  const parts = (cron || '').trim().split(/\s+/);
+  if (parts.length !== 5) return { freq: 'custom', time: '09:00', weekday: 1, monthDay: 1 };
+  const [min, hour, dom, , dow] = parts;
+  if (cron.trim() === '* * * * *') return { freq: 'minute', time: '09:00', weekday: 1, monthDay: 1 };
+  if (min !== '*' && hour === '*' && dom === '*' && dow === '*')
+    return { freq: 'hourly', time: `00:${min.padStart(2, '0')}`, weekday: 1, monthDay: 1 };
+  if (dom === '*' && dow === '*')
+    return { freq: 'daily', time: `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`, weekday: 1, monthDay: 1 };
+  if (dom === '*' && dow !== '*')
+    return {
+      freq: 'weekly',
+      time: `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`,
+      weekday: ((parseInt(dow, 10) % 7) + 7) % 7,
+      monthDay: 1,
+    };
+  if (dom !== '*' && dow === '*')
+    return { freq: 'monthly', time: `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`, weekday: 1, monthDay: parseInt(dom, 10) };
+  return { freq: 'custom', time: '09:00', weekday: 1, monthDay: 1 };
+}
+
+/** 由友好的频率配置生成 Cron 表达式 */
+function buildCron(freq: ScheduleFreq, time: string, weekday: number, monthDay: number): string {
+  const [h, m] = (time || '09:00').split(':');
+  switch (freq) {
+    case 'minute': return '* * * * *';
+    case 'hourly': return `${m} * * * *`;
+    case 'daily': return `${m} ${h} * * *`;
+    case 'weekly': return `${m} ${h} * * ${weekday}`;
+    case 'monthly': return `${m} ${h} ${monthDay} * *`;
+    case 'custom': return '';
+  }
+}
+
+/** 统一的主选择器样式：等宽（w-full + min-w-0）+ 文字溢出省略号（truncate）
+ *  min-w-0 关键：原生 <select> 默认 min-width 由最长 option 文本决定，
+ *  长名称（如多维表格名）会撑宽下拉框导致不等宽，min-w-0 让其收缩到父容器宽度。 */
+const SELECT_CLS =
+  'w-full min-w-0 truncate rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300';
+
+// ====== 自定义下拉选择器（替代原生 <select>，确保框+展开列表均等宽+省略号） ======
+
+interface SelectOption {
+  id: string;
+  name: string;
+}
+
+function CustomSelect({
+  value,
+  onChange,
+  options = [],
+  placeholder = '请选择',
+  disabled = false,
+  loading = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options?: SelectOption[];
+  placeholder?: string;
+  disabled?: boolean;
+  loading?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedLabel = options.find((o) => o.id === value)?.name || '';
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen(!open)}
+        disabled={disabled}
+        className={`${SELECT_CLS} text-left flex items-center justify-between gap-1`}
+      >
+        <span className="truncate flex-1 text-left">{selectedLabel || placeholder}</span>
+        {loading ? (
+          <svg className="w-3 h-3 animate-spin text-neutral-400 shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        ) : (
+          <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 w-full max-h-48 overflow-y-auto bg-white rounded-lg border border-neutral-200 shadow-xl z-20 py-1 animate-scale-in origin-top">
+            {options.length === 0 && !loading && (
+              <div className="text-xs text-neutral-400 px-3 py-2">{placeholder === '请选择' ? '暂无数据' : placeholder}</div>
+            )}
+            {options.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => { onChange(opt.id); setOpen(false); }}
+                className={`w-full text-left px-3 py-2 text-xs transition-colors ${
+                  opt.id === value
+                    ? 'bg-blue-50 text-blue-700 font-medium'
+                    : 'text-neutral-600 hover:bg-neutral-50'
+                }`}
+              >
+                <span className="truncate block">{opt.name}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ====== 配置组件类型 ======
 
 type ConfigComponent = React.FC<{ node: AppNode; onClose: () => void } & ConfigPanelProps>;
@@ -46,16 +166,64 @@ export const configPanelRegistry = new ConfigPanelRegistry();
 
 // ====== 子面板 ======
 
-function TriggerConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose: () => void } & ConfigPanelProps) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
+  const apps = useWorkflowEditorStore((s) => s.apps);
   const data = node.data as Record<string, unknown>;
   const [triggerKind, setTriggerKind] = useState((data.triggerKind as string) || 'webhook');
   const [webhookUrl, setWebhookUrl] = useState((data.webhookUrl as string) || `/api/trigger-webhook/${node.id}`);
   const [secretToken, setSecretToken] = useState((data.secretToken as string) || '');
   const [webhookBodyTemplate, setWebhookBodyTemplate] = useState((data.webhookBodyTemplate as string) || '');
+  const [cronExpression, setCronExpression] = useState((data.cronExpression as string) || '');
+  const [freq, setFreq] = useState<ScheduleFreq>('daily');
+  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const [weekday, setWeekday] = useState(1);
+  const [monthDay, setMonthDay] = useState(1);
+  const [eventAppToken, setEventAppToken] = useState((data.eventAppToken as string) || '');
+  const [eventTableId, setEventTableId] = useState((data.eventTableId as string) || '');
+  const [eventType, setEventType] = useState<'record_created' | 'record_updated' | 'record_deleted'>(
+    (data.eventType as 'record_created' | 'record_updated' | 'record_deleted') || 'record_created',
+  );
+
+  const [tables, setTables] = useState<{ table_id: string; name: string }[]>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
+
+  useEffect(() => {
+    if (eventAppToken && onListTables) {
+      setLoadingTables(true);
+      onListTables(eventAppToken)
+        .then(setTables)
+        .finally(() => setLoadingTables(false));
+    } else {
+      setTables([]);
+    }
+  }, [eventAppToken, onListTables]);
+
+  // 根据已保存的 cronExpression 初始化友好的频率配置
+  useEffect(() => {
+    const p = parseCron(cronExpression);
+    setFreq(p.freq);
+    setScheduleTime(p.time);
+    setWeekday(p.weekday);
+    setMonthDay(p.monthDay);
+    if (p.freq !== 'custom') setCronExpression(buildCron(p.freq, p.time, p.weekday, p.monthDay));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const updateSchedule = (
+    f: ScheduleFreq = freq,
+    t: string = scheduleTime,
+    w: number = weekday,
+    d: number = monthDay,
+  ) => {
+    if (f !== 'custom') setCronExpression(buildCron(f, t, w, d));
+  };
 
   const handleSave = () => {
-    updateNodeData(node.id, { triggerKind, webhookUrl, secretToken, webhookBodyTemplate });
+    updateNodeData(node.id, {
+      triggerKind, webhookUrl, secretToken, webhookBodyTemplate,
+      cronExpression, eventAppToken, eventTableId, eventType,
+    });
     onClose();
   };
 
@@ -66,7 +234,7 @@ function TriggerConfig({ node, onClose }: { node: AppNode; onClose: () => void }
         <select
           value={triggerKind}
           onChange={(e) => setTriggerKind(e.target.value)}
-          className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+          className={SELECT_CLS}
         >
           <option value="webhook">Webhook</option>
           <option value="scheduled">定时触发</option>
@@ -78,7 +246,7 @@ function TriggerConfig({ node, onClose }: { node: AppNode; onClose: () => void }
           <div>
             <label className="block text-xs font-medium text-neutral-700 mb-1">Webhook URL</label>
             <input
-              type="text" value={webhookUrl}
+              type="text" value={resolveWebhookUrl(webhookUrl)}
               onChange={(e) => setWebhookUrl(e.target.value)}
               className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-neutral-50"
               readOnly
@@ -107,12 +275,137 @@ function TriggerConfig({ node, onClose }: { node: AppNode; onClose: () => void }
         </>
       )}
       {triggerKind === 'scheduled' && (
-        <div>
-          <label className="block text-xs font-medium text-neutral-700 mb-1">Cron 表达式</label>
-          <input
-            type="text" placeholder="0 9 * * *"
-            className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-          />
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-neutral-700 mb-1">执行频率</label>
+            <select
+              value={freq}
+              onChange={(e) => { const f = e.target.value as ScheduleFreq; setFreq(f); updateSchedule(f); }}
+              className={SELECT_CLS}
+            >
+              <option value="minute">每分钟</option>
+              <option value="hourly">每小时</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+              <option value="custom">自定义（高级 Cron）</option>
+            </select>
+          </div>
+
+          {freq === 'hourly' && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">第几分钟触发</label>
+              <input
+                type="number" min={0} max={59}
+                value={Number(scheduleTime.split(':')[1])}
+                onChange={(e) => {
+                  const t = `00:${String(e.target.value || '0').padStart(2, '0')}`;
+                  setScheduleTime(t);
+                  updateSchedule(freq, t);
+                }}
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+              />
+              <p className="text-[10px] text-neutral-400 mt-1">每小时的第 {Number(scheduleTime.split(':')[1])} 分钟执行</p>
+            </div>
+          )}
+
+          {(freq === 'daily' || freq === 'weekly' || freq === 'monthly') && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">执行时间</label>
+              <input
+                type="time" value={scheduleTime}
+                onChange={(e) => { const t = e.target.value; setScheduleTime(t); updateSchedule(freq, t); }}
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+              />
+            </div>
+          )}
+
+          {freq === 'weekly' && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">星期</label>
+              <select
+                value={weekday}
+                onChange={(e) => { const w = Number(e.target.value); setWeekday(w); updateSchedule(freq, scheduleTime, w); }}
+                className={SELECT_CLS}
+              >
+                {['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((d, i) => (
+                  <option key={i} value={i}>{d}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {freq === 'monthly' && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">每月几号</label>
+              <select
+                value={monthDay}
+                onChange={(e) => { const d = Number(e.target.value); setMonthDay(d); updateSchedule(freq, scheduleTime, weekday, d); }}
+                className={SELECT_CLS}
+              >
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                  <option key={d} value={d}>{d} 号</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {freq === 'custom' && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">Cron 表达式</label>
+              <input
+                type="text"
+                value={cronExpression}
+                onChange={(e) => setCronExpression(e.target.value)}
+                placeholder="0 9 * * *"
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+              />
+            </div>
+          )}
+
+          {freq !== 'custom' && (
+            <p className="text-[10px] text-neutral-400">
+              将按 <span className="font-mono text-neutral-500">{cronExpression}</span> 执行（分 时 日 月 周）
+            </p>
+          )}
+        </div>
+      )}
+      {triggerKind === 'bitable_event' && (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-neutral-700 mb-1">监听的多维表格</label>
+            <CustomSelect
+              value={eventAppToken}
+              onChange={(v) => { setEventAppToken(v); setEventTableId(''); }}
+              options={apps.map((app) => ({ id: app.app_token, name: app.name }))}
+              placeholder="选择多维表格"
+            />
+          </div>
+          {eventAppToken && (
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">监听的数据表</label>
+              <CustomSelect
+                value={eventTableId}
+                onChange={(v) => setEventTableId(v)}
+                options={tables.map((t) => ({ id: t.table_id, name: t.name }))}
+                placeholder="选择数据表"
+                loading={loadingTables}
+              />
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-neutral-700 mb-1">监听的事件类型</label>
+            <select
+              value={eventType}
+              onChange={(e) => setEventType(e.target.value as 'record_created' | 'record_updated' | 'record_deleted')}
+              className={SELECT_CLS}
+            >
+              <option value="record_created">记录创建</option>
+              <option value="record_updated">记录更新</option>
+              <option value="record_deleted">记录删除</option>
+            </select>
+          </div>
+          <p className="text-[10px] text-neutral-400">需在飞书开放平台配置多维表格事件回调，将事件推送到本工作流 Webhook 后生效</p>
         </div>
       )}
       <div className="flex justify-end gap-2 pt-2">
@@ -128,7 +421,8 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
   const apps = useWorkflowEditorStore((s) => s.apps);
   const data = node.data as Record<string, unknown>;
 
-  const [actionType, setActionType] = useState<CrdAction>((data.actionType as CrdAction) || 'create_record');
+  // 操作类型由节点创建时（从面板拖入）即固定，无需选择器
+  const [actionType] = useState<CrdAction>((data.actionType as CrdAction) || 'create_record');
   const [targetAppToken, setTargetAppToken] = useState((data.targetAppToken as string) || '');
   const [targetTableId, setTargetTableId] = useState((data.targetTableId as string) || '');
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>(
@@ -208,50 +502,28 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
 
   return (
     <div className="space-y-4">
-      {/* 动作类型 */}
-      <div>
-        <label className="block text-xs font-medium text-neutral-700 mb-1">操作类型</label>
-        <select
-          value={actionType}
-          onChange={(e) => setActionType(e.target.value as CrdAction)}
-          className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-        >
-          {Object.entries(CRUD_ACTION_META).map(([key, meta]) => (
-            <option key={key} value={key}>{meta.label}</option>
-          ))}
-        </select>
-      </div>
-
       {/* 目标多维表格 */}
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">目标多维表格</label>
-        <select
+        <CustomSelect
           value={targetAppToken}
-          onChange={(e) => { setTargetAppToken(e.target.value); setTargetTableId(''); }}
-          className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-        >
-          <option value="">选择多维表格</option>
-          {apps.map((app) => (
-            <option key={app.app_token} value={app.app_token}>{app.name}</option>
-          ))}
-        </select>
+          onChange={(v) => { setTargetAppToken(v); setTargetTableId(''); }}
+          options={apps.map((app) => ({ id: app.app_token, name: app.name }))}
+          placeholder="选择多维表格"
+        />
       </div>
 
       {/* 数据表 */}
       {targetAppToken && (
         <div>
           <label className="block text-xs font-medium text-neutral-700 mb-1">数据表</label>
-          <select
+          <CustomSelect
             value={targetTableId}
-            onChange={(e) => setTargetTableId(e.target.value)}
-            className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-            disabled={loadingTables}
-          >
-            <option value="">{loadingTables ? '加载中...' : '选择数据表'}</option>
-            {tables.map((t) => (
-              <option key={t.table_id} value={t.table_id}>{t.name}</option>
-            ))}
-          </select>
+            onChange={(v) => setTargetTableId(v)}
+            options={tables.map((t) => ({ id: t.table_id, name: t.name }))}
+            placeholder="选择数据表"
+            loading={loadingTables}
+          />
         </div>
       )}
 
@@ -271,51 +543,77 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
           ) : (
             <div className="space-y-2">
               {fieldMappings.map((m, idx) => (
-                <div key={m.fieldId} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-50 border border-neutral-100">
-                  <span className="text-xs font-medium text-neutral-600 min-w-[60px]">{m.fieldName}</span>
-                  <select
-                    value={m.source}
-                    onChange={(e) => {
-                      const newMaps = [...fieldMappings];
-                      newMaps[idx] = { ...newMaps[idx], source: e.target.value as 'manual' | 'webhook' | 'variable' };
-                      setFieldMappings(newMaps);
-                    }}
-                    className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
-                  >
-                    <option value="manual">手动</option>
-                    <option value="webhook">Webhook</option>
-                    <option value="variable">变量</option>
-                  </select>
-                  {m.source === 'manual' && (
-                    <input
-                      type="text" value={m.manualValue}
+                <div className="p-2 rounded-lg bg-neutral-50 border border-neutral-100 space-y-2">
+                  {/* 第一行：需要映射的字段 */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <CustomSelect
+                        value={m.fieldId}
+                        onChange={(fid) => {
+                          const f = fields.find((ff) => ff.field_id === fid);
+                          if (!f) return;
+                          const newMaps = [...fieldMappings];
+                          newMaps[idx] = { ...newMaps[idx], fieldId: f.field_id, fieldName: f.name, fieldType: f.type };
+                          setFieldMappings(newMaps);
+                        }}
+                        options={fields
+                          .filter((f) => f.field_id === m.fieldId || !fieldMappings.some((mm) => mm.fieldId === f.field_id))
+                          .map((f) => ({ id: f.field_id, name: f.name }))}
+                        placeholder="选择字段"
+                      />
+                    </div>
+                    <button
+                      onClick={() => setFieldMappings(fieldMappings.filter((_, i) => i !== idx))}
+                      className="text-red-400 hover:text-red-500 shrink-0"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                  {/* 第二行：映射类型 + 映射内容（同一方框内） */}
+                  <div className="flex items-center gap-2 border border-neutral-200 rounded-lg p-2 bg-white">
+                    <select
+                      value={m.source}
                       onChange={(e) => {
                         const newMaps = [...fieldMappings];
-                        newMaps[idx] = { ...newMaps[idx], manualValue: e.target.value };
+                        newMaps[idx] = { ...newMaps[idx], source: e.target.value as 'manual' | 'webhook' | 'variable' };
                         setFieldMappings(newMaps);
                       }}
-                      placeholder="值"
-                      className="flex-1 text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
-                    />
-                  )}
-                  {m.source === 'webhook' && (
-                    <input
-                      type="text" value={m.webhookKey}
-                      onChange={(e) => {
-                        const newMaps = [...fieldMappings];
-                        newMaps[idx] = { ...newMaps[idx], webhookKey: e.target.value };
-                        setFieldMappings(newMaps);
-                      }}
-                      placeholder="content.key"
-                      className="flex-1 text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
-                    />
-                  )}
-                  <button
-                    onClick={() => setFieldMappings(fieldMappings.filter((_, i) => i !== idx))}
-                    className="text-red-400 hover:text-red-500"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
+                      className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white shrink-0"
+                    >
+                      <option value="manual">手动输入</option>
+                      <option value="webhook">Webhook 参数</option>
+                      <option value="variable">变量</option>
+                    </select>
+                    <div className="flex-1 min-w-0">
+                      {m.source === 'manual' && (
+                        <input
+                          type="text" value={m.manualValue}
+                          onChange={(e) => {
+                            const newMaps = [...fieldMappings];
+                            newMaps[idx] = { ...newMaps[idx], manualValue: e.target.value };
+                            setFieldMappings(newMaps);
+                          }}
+                          placeholder="值"
+                          className="w-full text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
+                        />
+                      )}
+                      {m.source === 'webhook' && (
+                        <input
+                          type="text" value={m.webhookKey}
+                          onChange={(e) => {
+                            const newMaps = [...fieldMappings];
+                            newMaps[idx] = { ...newMaps[idx], webhookKey: e.target.value };
+                            setFieldMappings(newMaps);
+                          }}
+                          placeholder="content.key"
+                          className="w-full text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
+                        />
+                      )}
+                      {m.source === 'variable' && (
+                        <div className="text-[11px] text-neutral-400">选择变量</div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -656,7 +954,7 @@ function ImConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
         <select
           value={receiveIdType}
           onChange={(e) => setReceiveIdType(e.target.value)}
-          className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+          className={SELECT_CLS}
         >
           <option value="open_id">Open ID</option>
           <option value="user_id">User ID</option>
@@ -806,7 +1104,7 @@ function LoopConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">循环模式</label>
-        <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={mode} onChange={(e) => setMode(e.target.value)} className={SELECT_CLS}>
           <option value="fixed_count">固定次数</option>
           <option value="iterate_array">迭代数组</option>
         </select>
@@ -850,7 +1148,7 @@ function MergeConfig({ node, onClose }: { node: AppNode; onClose: () => void }) 
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">合并模式</label>
-        <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={mode} onChange={(e) => setMode(e.target.value)} className={SELECT_CLS}>
           <option value="append">追加（数组）</option>
           <option value="combine">对象合并</option>
           <option value="join">Key 关联</option>
@@ -972,7 +1270,7 @@ function AggregateConfig({ node, onClose }: { node: AppNode; onClose: () => void
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">聚合操作</label>
-        <select value={operation} onChange={(e) => setOperation(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={operation} onChange={(e) => setOperation(e.target.value)} className={SELECT_CLS}>
           <option value="count">计数</option><option value="sum">求和</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option><option value="group_by">分组</option>
         </select>
       </div>
@@ -1008,7 +1306,7 @@ function CodeConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">语言</label>
-        <select value={language} onChange={(e) => setLanguage(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={language} onChange={(e) => setLanguage(e.target.value)} className={SELECT_CLS}>
           <option value="javascript">JavaScript</option>
           <option value="python">Python（需要运行时）</option>
         </select>
@@ -1045,7 +1343,7 @@ function TemplateConfig({ node, onClose }: { node: AppNode; onClose: () => void 
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">模板引擎</label>
-        <select value={engine} onChange={(e) => setEngine(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={engine} onChange={(e) => setEngine(e.target.value)} className={SELECT_CLS}>
           <option value="plain">纯文本 {'{{var}}'}</option>
           <option value="handlebars">Handlebars</option>
           <option value="mustache">Mustache</option>
@@ -1134,7 +1432,7 @@ function BotNotifyConfig({ node, onClose }: { node: AppNode; onClose: () => void
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">通知渠道</label>
-        <select value={channel} onChange={(e) => setChannel(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={channel} onChange={(e) => setChannel(e.target.value)} className={SELECT_CLS}>
           <option value="feishu">飞书</option><option value="dingtalk">钉钉</option><option value="wechat_work">企业微信</option><option value="slack">Slack</option>
         </select>
       </div>
@@ -1177,7 +1475,7 @@ function CreateDocConfig({ node, onClose }: { node: AppNode; onClose: () => void
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">文档类型</label>
-        <select value={docType} onChange={(e) => setDocType(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={docType} onChange={(e) => setDocType(e.target.value)} className={SELECT_CLS}>
           <option value="docx">文档</option><option value="sheet">表格</option><option value="slide">幻灯片</option><option value="bitable">多维表格</option>
         </select>
       </div>
@@ -1231,7 +1529,7 @@ function CreateTaskConfig({ node, onClose }: { node: AppNode; onClose: () => voi
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">优先级</label>
-        <select value={priority} onChange={(e) => setPriority(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={priority} onChange={(e) => setPriority(e.target.value)} className={SELECT_CLS}>
           <option value="low">低</option><option value="medium">中</option><option value="high">高</option>
         </select>
       </div>
@@ -1316,7 +1614,7 @@ function UploadFileConfig({ node, onClose }: { node: AppNode; onClose: () => voi
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">文件类型</label>
-        <select value={fileType} onChange={(e) => setFileType(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300">
+        <select value={fileType} onChange={(e) => setFileType(e.target.value)} className={SELECT_CLS}>
           <option value="auto">自动识别</option><option value="docx">文档</option><option value="sheet">表格</option><option value="bitable">多维表格</option><option value="image">图片</option><option value="pdf">PDF</option>
         </select>
       </div>

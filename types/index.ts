@@ -679,7 +679,7 @@ export interface Workflow {
 /** 所有节点操作类型的展示信息 */
 export const NODE_DISPLAY_META: Record<string, { label: string; color: string; desc: string; category: NodeCategory }> = {
   // 触发器
-  trigger:        { label: 'Webhook 触发',   color: 'blue',   desc: '通过 HTTP POST 请求触发流程',          category: 'trigger' },
+  trigger:        { label: '触发器',   color: 'blue',   desc: '通过 HTTP POST 请求触发流程',          category: 'trigger' },
   // 流程控制
   filter:         { label: '条件筛选',        color: 'slate',  desc: '按条件过滤，决定是否继续执行',               category: 'flow_control' },
   delay:          { label: '延时等待',        color: 'orange', desc: '等待指定时间后继续执行',                   category: 'flow_control' },

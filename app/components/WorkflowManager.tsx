@@ -121,6 +121,10 @@ function makeDefaultTriggerConfig(): import('@/types').TriggerConfig {
     triggerKind: 'webhook',
     webhookUrl: `/api/trigger-webhook/${generateWebhookId()}`,
     secretToken: '',
+    cronExpression: '',
+    eventAppToken: '',
+    eventTableId: '',
+    eventType: 'record_created',
   };
 }
 
@@ -144,7 +148,7 @@ function makeDefaultWorkflow(existingNames?: Set<string>): Workflow {
     name: defaultName,
     status: 'draft',
     nodes: [
-      { id: 'trigger', type: 'trigger', title: 'Webhook 触发', triggerConfig: makeDefaultTriggerConfig() },
+      { id: 'trigger', type: 'trigger', title: '触发器', triggerConfig: makeDefaultTriggerConfig() },
       { id: idGen(), type: 'action', title: '新增记录', actionConfig: makeDefaultActionConfig('create_record') },
       { id: 'end', type: 'end', title: '结束' },
     ],
@@ -805,7 +809,7 @@ function FieldMappingRow({
           const f = availableFields.find((ff) => ff.field_id === e.target.value);
           if (f) onChange({ fieldId: f.field_id, fieldName: f.name, fieldType: f.type });
         }}
-        className="w-[140px] shrink-0 px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white text-neutral-700 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-300"
+        className="w-[140px] shrink-0 px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white text-neutral-700 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-300 truncate"
       >
         {availableFields.map((f) => (
           <option key={f.field_id} value={f.field_id} disabled={f.field_id !== mapping.fieldId && usedFieldIds.includes(f.field_id)}>
@@ -928,7 +932,7 @@ function FilterRow({
           const field = availableFields.find((ff) => ff.field_id === e.target.value);
           onChange({ fieldId: e.target.value, fieldName: field?.name ?? '' });
         }}
-        className="px-2 py-1.5 border border-neutral-200 rounded-lg text-xs bg-white text-neutral-600 focus:outline-none min-w-0 flex-1"
+        className="px-2 py-1.5 border border-neutral-200 rounded-lg text-xs bg-white text-neutral-600 focus:outline-none min-w-0 flex-1 truncate"
       >
         {availableFields.map((ff) => (
           <option key={ff.field_id} value={ff.field_id}>{ff.name}</option>
@@ -939,7 +943,7 @@ function FilterRow({
       <select
         value={filter.operator}
         onChange={(e) => onChange({ operator: e.target.value as FilterOp })}
-        className="px-2 py-1.5 border border-neutral-200 rounded-lg text-xs bg-white text-neutral-600 focus:outline-none w-[72px] shrink-0"
+        className="px-2 py-1.5 border border-neutral-200 rounded-lg text-xs bg-white text-neutral-600 focus:outline-none w-[72px] shrink-0 truncate"
       >
         <option value="eq">等于</option>
         <option value="ne">不等于</option>
@@ -1307,7 +1311,7 @@ function DelayInlineEditor({
       <select
         value={config.unit}
         onChange={(e) => onChange({ ...config, unit: e.target.value as import('@/types').DelayConfig['unit'] })}
-        className="px-1.5 py-0.5 border border-neutral-200 rounded text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200"
+        className="px-1.5 py-0.5 border border-neutral-200 rounded text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 truncate"
         onClick={(e) => e.stopPropagation()}
       >
         {Object.entries(unitLabel).map(([k, v]) => (
@@ -1650,7 +1654,7 @@ function FilterConfigPanel({
                 {conditions.map((c, i) => (
                   <div key={i} className="flex items-center gap-2 p-3 bg-neutral-50 rounded-lg border border-neutral-100">
                     <input type="text" value={c.fieldName} onChange={(e) => updateCondition(i, { fieldName: e.target.value })} placeholder="字段名" className="flex-1 px-2 py-1.5 border border-neutral-200 rounded text-xs focus:outline-none focus:ring-2 focus:ring-purple-200" />
-                    <select value={c.operator} onChange={(e) => updateCondition(i, { operator: e.target.value as FilterOp })} className="px-2 py-1.5 border border-neutral-200 rounded text-xs bg-white focus:outline-none focus:ring-2 focus:ring-purple-200">
+                    <select value={c.operator} onChange={(e) => updateCondition(i, { operator: e.target.value as FilterOp })} className="px-2 py-1.5 border border-neutral-200 rounded text-xs bg-white focus:outline-none focus:ring-2 focus:ring-purple-200 truncate">
                       <option value="eq">等于</option><option value="ne">不等于</option><option value="contains">包含</option>
                       <option value="gt">大于</option><option value="lt">小于</option><option value="gte">大于等于</option><option value="lte">小于等于</option>
                     </select>
@@ -1711,7 +1715,7 @@ function DelayConfigPanel({
             <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">延迟时间</label>
             <div className="flex gap-2">
               <input type="number" min={1} value={duration} onChange={(e) => setDuration(Math.max(1, Number(e.target.value)))} className="w-24 px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
-              <select value={unit} onChange={(e) => setUnit(e.target.value as import('@/types').DelayConfig['unit'])} className="px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-200">
+              <select value={unit} onChange={(e) => setUnit(e.target.value as import('@/types').DelayConfig['unit'])} className="px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 truncate">
                 {unitOptions.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
               </select>
             </div>
@@ -1792,7 +1796,7 @@ function HttpRequestConfigPanel({
           <div>
             <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">请求方法 & URL</label>
             <div className="flex gap-2">
-              <select value={method} onChange={(e) => setMethod(e.target.value as import('@/types').HttpRequestConfig['method'])} className="w-24 px-2 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-teal-200 font-mono">
+              <select value={method} onChange={(e) => setMethod(e.target.value as import('@/types').HttpRequestConfig['method'])} className="w-24 px-2 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-teal-200 font-mono truncate">
                 {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
               <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/api" className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-teal-200" />
@@ -1916,7 +1920,7 @@ function ImMessageConfigPanel({
           {/* 接收人 */}
           <div>
             <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">接收人</label>
-            <select value={receiveIdType} onChange={(e) => setReceiveIdType(e.target.value as import('@/types').ImMessageConfig['receiveIdType'])} className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-violet-200">
+            <select value={receiveIdType} onChange={(e) => setReceiveIdType(e.target.value as import('@/types').ImMessageConfig['receiveIdType'])} className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-violet-200 truncate">
               <option value="open_id">Open ID</option><option value="user_id">User ID</option><option value="union_id">Union ID</option><option value="email">邮箱</option><option value="chat_id">群聊 ID</option>
             </select>
             <div className="flex gap-2 mb-2">

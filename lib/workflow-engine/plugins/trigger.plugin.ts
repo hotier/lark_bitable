@@ -10,7 +10,7 @@ import TriggerNode from '@/app/components/workflow-editor/nodes/TriggerNode';
 export const triggerPlugin: NodePlugin = {
   kind: 'trigger',
   rfType: 'triggerNode',
-  displayName: 'Webhook 触发',
+  displayName: '触发器',
   description: '通过 HTTP POST 请求触发流程',
   icon: Webhook,
   color: 'text-blue-600',
@@ -25,6 +25,10 @@ export const triggerPlugin: NodePlugin = {
     webhookUrl: '',
     secretToken: '',
     webhookBodyTemplate: '',
+    cronExpression: '',
+    eventAppToken: '',
+    eventTableId: '',
+    eventType: 'record_created',
   }),
 
   component: TriggerNode,
@@ -46,6 +50,10 @@ export const triggerPlugin: NodePlugin = {
       webhookUrl: cfg?.webhookUrl || '',
       secretToken: cfg?.secretToken || '',
       webhookBodyTemplate: cfg?.webhookBodyTemplate || '',
+      cronExpression: cfg?.cronExpression || '',
+      eventAppToken: cfg?.eventAppToken || '',
+      eventTableId: cfg?.eventTableId || '',
+      eventType: cfg?.eventType || 'record_created',
     };
   },
 
@@ -55,6 +63,10 @@ export const triggerPlugin: NodePlugin = {
       webhookUrl: (data.webhookUrl as string) || '',
       secretToken: (data.secretToken as string) || '',
       webhookBodyTemplate: (data.webhookBodyTemplate as string) || '',
+      cronExpression: (data.cronExpression as string) || '',
+      eventAppToken: (data.eventAppToken as string) || '',
+      eventTableId: (data.eventTableId as string) || '',
+      eventType: (data.eventType as string) || 'record_created',
     },
   }),
 };
