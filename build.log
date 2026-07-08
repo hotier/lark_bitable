@@ -1,0 +1,47 @@
+
+> feishuwritten@0.1.0 build
+> next build
+
+▲ Next.js 16.2.9 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 27.4s
+  Running TypeScript ...
+  Finished TypeScript in 5.2s ...
+  Collecting page data using 11 workers ...
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+  Generating static pages using 11 workers (0/15) ...
+  Generating static pages using 11 workers (3/15) 
+  Generating static pages using 11 workers (7/15) 
+  Generating static pages using 11 workers (11/15) 
+✓ Generating static pages using 11 workers (15/15) in 272ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/bitable
+├ ƒ /api/bitable/files/download
+├ ƒ /api/bitable/files/preview
+├ ƒ /api/bitable/files/token
+├ ƒ /api/bitable/oauth/callback
+├ ƒ /api/executions
+├ ƒ /api/trigger-webhook/[id]
+├ ƒ /api/workflows
+├ ○ /bitable
+├ ○ /docs
+├ ○ /flow
+├ ƒ /flow/[id]
+├ ƒ /p/[token]
+└ ○ /sheets
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

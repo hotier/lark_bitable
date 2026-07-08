@@ -108,7 +108,9 @@ export async function POST(
             textFields[k] = v;
           } else {
             const buf = Buffer.from(await v.arrayBuffer());
-            fileFields[k] = `data:${v.type || 'application/octet-stream'};base64,${buf.toString('base64')}`;
+            const mime = v.type || 'application/octet-stream';
+            fileFields[k] = `data:${mime};base64,${buf.toString('base64')}`;
+            console.log(`[webhook] 收到文件字段「${k}」: mime=${mime}, ${(buf.length / 1024).toFixed(1)}KB`);
           }
         }
         webhookContent = { ...textFields, ...fileFields };
