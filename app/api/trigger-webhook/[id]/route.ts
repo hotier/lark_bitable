@@ -103,15 +103,24 @@ export async function POST(
         const form = await request.formData();
         const textFields: Record<string, unknown> = {};
         const fileFields: Record<string, unknown> = {};
+        const unnamedFiles: string[] = []; // iOS 可能以空字段名发送文件，作为兜底
         for (const [k, v] of form.entries()) {
           if (typeof v === 'string') {
-            textFields[k] = v;
+            if (k) textFields[k] = v;
+            console.log(`[webhook] 收到文本字段「${k || '(空)'}」: ${(v as string).slice(0, 40)}`);
           } else {
             const buf = Buffer.from(await v.arrayBuffer());
             const mime = v.type || 'application/octet-stream';
-            fileFields[k] = `data:${mime};base64,${buf.toString('base64')}`;
-            console.log(`[webhook] 收到文件字段「${k}」: mime=${mime}, ${(buf.length / 1024).toFixed(1)}KB`);
+            const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+            console.log(`[webhook] 收到文件字段「${k || '(空)'}」: mime=${mime}, ${(buf.length / 1024).toFixed(1)}KB`);
+            if (k) fileFields[k] = dataUrl;
+            else unnamedFiles.push(dataUrl);
           }
+        }
+        // 兜底：没有任何命名字段时，把未命名文件当作 image（兼容 iOS 空字段名的情况）
+        if (Object.keys(fileFields).length === 0 && unnamedFiles.length > 0) {
+          fileFields['image'] = unnamedFiles[0];
+          console.log(`[webhook] 未发现命名字段，将 ${unnamedFiles.length} 个未命名文件兜底映射为 image`);
         }
         webhookContent = { ...textFields, ...fileFields };
         rawBody = webhookContent;
@@ -173,7 +182,9 @@ export async function POST(
         testValueType: typeof webhookContent['test'],
         hint:
           receivedKeys.length === 0
-            ? '未收到任何字段。若用 iOS 快捷指令传图片，请将「获取 URL 内容」的请求体设为「表单」(Form)，并添加字段名称=image 的文件字段、字段名称=test 的文本字段。JSON 模式无法直接发送二进制图片。'
+            ? (contentType.includes('multipart')
+                ? '已收到 multipart 表单但无字段。请检查 iOS「获取 URL 内容」的表单：每个字段的「字段名称」需填写(如 image/test)，且字段「值」必须真正连接照片变量/文本——iOS 会跳过值为空的字段不发送。'
+                : '未收到任何字段。请确认 iOS「获取 URL 内容」的请求体设为「表单」(Form) 而非 JSON，并添加字段名称=image 的文件字段。JSON 模式无法直接发送二进制图片。')
             : undefined,
       },
     });
