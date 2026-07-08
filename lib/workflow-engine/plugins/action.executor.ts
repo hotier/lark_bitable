@@ -28,9 +28,14 @@ async function resolveFieldValues(
   const appToken = node.actionConfig?.targetAppToken || '';
   const fields: Record<string, unknown> = {};
   for (const m of mappings) {
-    if (m.source === 'manual') {
-      fields[m.fieldName] = m.manualValue;
-    } else if (m.source === 'webhook') {
+      if (m.source === 'manual') {
+        // 附件字段：手动值为空时跳过，避免写入空字符串触发飞书 AttachFieldConvFail
+        if (m.fieldType === 'file' && (!m.manualValue || String(m.manualValue).length === 0)) {
+          console.warn(`[webhook] 附件字段「${m.fieldName}」: 手动值为空，已跳过`);
+          continue;
+        }
+        fields[m.fieldName] = m.manualValue;
+      } else if (m.source === 'webhook') {
       const key = m.webhookKey.startsWith('content.') ? m.webhookKey.slice('content.'.length) : m.webhookKey;
       const raw = ctx.webhookContent[key];
 

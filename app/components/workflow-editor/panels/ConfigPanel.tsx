@@ -543,7 +543,7 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
           ) : (
             <div className="space-y-2">
               {fieldMappings.map((m, idx) => (
-                <div className="p-2 rounded-lg bg-neutral-50 border border-neutral-100 space-y-2">
+                <div key={idx} className="p-2 rounded-lg bg-neutral-50 border border-neutral-100 space-y-2">
                   {/* 第一行：需要映射的字段 */}
                   <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
