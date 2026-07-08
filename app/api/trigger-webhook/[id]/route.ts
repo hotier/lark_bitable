@@ -163,13 +163,18 @@ export async function POST(
     // 5. 使用 DAG 执行引擎按拓扑序执行节点
     const result = await executeWorkflow(workflow, webhookContent, secretToken);
     console.log(`[webhook] 执行结果:`, result.data?.results);
+    const receivedKeys = Object.keys(webhookContent);
     return NextResponse.json({
       ...result,
       _debug: {
         contentType,
-        receivedKeys: Object.keys(webhookContent),
+        receivedKeys,
         imageValueType: typeof webhookContent['image'],
         testValueType: typeof webhookContent['test'],
+        hint:
+          receivedKeys.length === 0
+            ? '未收到任何字段。若用 iOS 快捷指令传图片，请将「获取 URL 内容」的请求体设为「表单」(Form)，并添加字段名称=image 的文件字段、字段名称=test 的文本字段。JSON 模式无法直接发送二进制图片。'
+            : undefined,
       },
     });
   } catch (error: any) {
