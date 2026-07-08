@@ -97,10 +97,28 @@ export async function POST(
     let rawBody: Record<string, unknown> = {};
     let webhookContent: Record<string, unknown> = {};
     const contentType = request.headers.get('content-type') || '';
+    // 诊断变量（仅 multipart 时填充，回传到 _debug 便于跨环境排查）
+    let diagSize: number | undefined;
+    let diagCt: string | undefined;
+    let diagCl: string | undefined;
+    let diagTe: string | undefined;
+    let diagRawHead: string | undefined;
     try {
       if (contentType.includes('multipart/form-data')) {
+        // === 诊断：抓取 iOS 原始请求体，看清它到底发了什么 ===
+        const rawBuf = Buffer.from(await request.arrayBuffer());
+        diagSize = rawBuf.length;
+        diagCt = request.headers.get('content-type') || '';
+        diagCl = request.headers.get('content-length') || '(无)';
+        diagTe = request.headers.get('transfer-encoding') || '(无)';
+        diagRawHead = rawBuf.slice(0, 800).toString('latin1');
+        console.log(`[diag] multipart 原始大小=${rawBuf.length} 字节, content-type=${diagCt}, content-length=${diagCl}, transfer-encoding=${diagTe}`);
+        console.log(`[diag] 原始头 800 字节=\n${diagRawHead}`);
+        try { require('fs').writeFileSync('last_ios_body.bin', rawBuf); console.log('[diag] 已写出 last_ios_body.bin'); } catch {}
+        // 用原始字节重建请求再解析（原 request 的 body 已被消费）
+        const rebuilt = new Request(request.url, { method: 'POST', headers: request.headers, body: rawBuf });
         // 表单 / 文件上传（如 iOS 快捷指令传图片）：文件转 base64 data URL 注入 content
-        const form = await request.formData();
+        const form = await rebuilt.formData();
         const textFields: Record<string, unknown> = {};
         const fileFields: Record<string, unknown> = {};
         const unnamedFiles: string[] = []; // iOS 可能以空字段名发送文件，作为兜底
@@ -180,6 +198,9 @@ export async function POST(
         receivedKeys,
         imageValueType: typeof webhookContent['image'],
         testValueType: typeof webhookContent['test'],
+        diagSize,
+        diagHeaders: { 'content-type': diagCt, 'content-length': diagCl, 'transfer-encoding': diagTe },
+        diagRawHead,
         hint:
           receivedKeys.length === 0
             ? (contentType.includes('multipart')
