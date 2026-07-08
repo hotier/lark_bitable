@@ -4,6 +4,7 @@
  * 与 action.plugin.ts 分离以避免客户端 bundle 引入 @larksuiteoapi/node-sdk。
  */
 
+import { createRequire } from 'module';
 import type { WorkflowNode, ExecutionStep } from '@/types';
 import type { ExecutionContext, NodeExecutor } from '../node-registry';
 
@@ -60,7 +61,12 @@ async function resolveFieldValues(
               let ext = 'webp';
               if (mime.startsWith('image/') && mime !== 'image/webp') {
                 try {
-                  const { default: sharp } = await import('sharp');
+                  // Next 16 Turbopack 会把一切能静态解析出 'sharp' 说明符的
+                  // import/require 调用错误地 external 成 sharp-<hash> 而找不到。
+                  // 用 new Function 隔离加载逻辑，使其成为不透明字符串，
+                  // Turbopack 不静态分析，运行时由 node 直接 require 真实 sharp 包。
+                  const require = createRequire(import.meta.url);
+                  const sharp = new Function('require', 'return require("sharp");')(require);
                   const base64 = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
                   const webpBuf = await sharp(Buffer.from(base64, 'base64')).webp().toBuffer();
                   uploadDataUrl = `data:image/webp;base64,${webpBuf.toString('base64')}`;
