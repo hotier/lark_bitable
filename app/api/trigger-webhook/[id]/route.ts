@@ -87,7 +87,13 @@ export async function POST(
     let webhookContent: Record<string, unknown> = {};
     try {
       rawBody = await request.json();
-      webhookContent = (rawBody.content as Record<string, unknown>) || {};
+      const isObj = !!rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody);
+      // 有 content 字段则取 content，否则把整包 body 当作内容（兼容两种传参方式）
+      webhookContent = isObj && 'content' in rawBody
+        ? ((rawBody.content as Record<string, unknown>) || {})
+        : isObj
+          ? rawBody
+          : {};
     } catch {
       // 请求体为空或非 JSON，使用空 content
     }
