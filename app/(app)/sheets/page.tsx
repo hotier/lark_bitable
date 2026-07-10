@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Grid3X3, Plus, Trash2 } from 'lucide-react';
+import { Grid3X3, Plus, Trash2, Search } from 'lucide-react';
 import type { App, ToastMessage } from '@/types';
 import {
-  listSheets, createSheet, deleteFile, invalidateSheetsCache,
+  listSheets, createSheet, deleteFile, invalidateSheetsCache, refreshSheets,
   logout as apiLogout,
 } from '@/lib/api';
-import OAuthLogin from '@/app/components/OAuthLogin';
+import TopBar from '@/app/components/TopBar';
 import Toast from '@/app/components/Toast';
 import NameCard from '@/app/components/NameCard';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
@@ -26,6 +26,7 @@ export default function SheetsPage() {
   const [nameCardFile, setNameCardFile] = useState<App | null>(null);
   const [nameCardRect, setNameCardRect] = useState<DOMRect | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<App | null>(null);
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     setIsAuthenticated(true); // AuthGuard 已验证
@@ -85,33 +86,49 @@ export default function SheetsPage() {
     }
   };
 
+  const filtered = search
+    ? files.filter((f) => f.name.toLowerCase().includes(search.toLowerCase()))
+    : files;
+
   return (
     <div className="flex flex-col h-full">
       <Toast messages={toasts} onDismiss={dismissToast} />
 
-      <header
-        className="sticky top-0 z-20 flex items-center justify-between h-14 px-6 flex-shrink-0"
-        style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
+      <TopBar
+        isAuthenticated={isAuthenticated} isLoading={isLoading}
+        onFetchApps={async () => {
+          setIsLoading(true);
+          try {
+            const data = await refreshSheets();
+            setFiles(data.files || []);
+            addToast('success', `已同步 ${data.files?.length ?? 0} 个在线表格`);
+          } catch (err) {
+            addToast('error', `同步在线表格失败: ${err instanceof Error ? err.message : '未知错误'}`);
+          } finally {
+            setIsLoading(false);
+          }
+        }} onLogout={async () => { await apiLogout(); invalidateSheetsCache(); setFiles([]); window.location.replace('/'); }}
       >
         <div className="flex items-center gap-3">
           <Grid3X3 className="w-5 h-5 text-green-500" />
-          <h1 className="text-base font-semibold text-neutral-900">在线表格管理</h1>
+          <h1 className="text-base font-semibold text-neutral-900">在线表格</h1>
         </div>
-        <div className="flex items-center gap-3">
-          <OAuthLogin
-            isAuthenticated={isAuthenticated} oauthUrl="" isLoading={isLoading}
-            onFetchApps={() => { invalidateSheetsCache(); loadFiles(); }} onLogout={async () => { await apiLogout(); invalidateSheetsCache(); setFiles([]); window.location.replace('/'); }} hideLogin
-          />
-        </div>
-      </header>
+      </TopBar>
 
       <div className="flex-1 overflow-auto">
         <div className="px-6 py-6 space-y-6">
           {/* Toolbar */}
           <div className="flex items-center justify-between">
-            <p className="text-sm text-neutral-400">
-              {files.length > 0 ? `共 ${files.length} 个在线表格` : '暂无在线表格'}
-            </p>
+            <div className="relative w-72">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索在线表格..."
+                className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-green-100 focus:border-green-300 placeholder:text-neutral-400"
+              />
+            </div>
             <button
               onClick={() => setShowCreate(true)}
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-green-500 rounded-lg hover:bg-green-600 transition-colors"
@@ -128,13 +145,13 @@ export default function SheetsPage() {
                 <div key={i} className="h-14 border-b border-neutral-50 last:border-b-0" />
               ))}
             </div>
-          ) : files.length === 0 ? (
+          ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-neutral-300">
               <Grid3X3 className="w-16 h-16 mb-4" />
-              <p className="text-sm">暂无在线表格，点击上方按钮创建</p>
+              <p className="text-sm">{files.length === 0 ? '暂无在线表格，点击上方按钮创建' : '没有匹配的在线表格'}</p>
             </div>
           ) : (
-            <div className="rounded-xl bg-white border border-neutral-200 overflow-hidden">
+            <div className="rounded-xl bg-white border border-neutral-200 overflow-x-auto">
               {/* Header */}
               <div className="flex items-center h-10 px-5 gap-4 text-xs font-medium text-neutral-400 bg-neutral-50 border-b border-neutral-100">
                 <span className="flex-1 min-w-0">名称</span>
@@ -144,10 +161,10 @@ export default function SheetsPage() {
                 <span className="w-[72px]" />
               </div>
               {/* Rows */}
-              {files.map((file) => (
+              {filtered.map((file) => (
                 <div
                   key={file.app_token}
-                  className="flex items-center px-5 py-3 gap-4 border-b border-neutral-50 last:border-b-0 hover:bg-green-50/30 transition-colors group"
+                  className="flex items-center px-5 py-3 gap-4 border-b border-neutral-50 last:border-b-0 hover:bg-green-50/30 transition-colors group min-w-[640px]"
                 >
                   <div className="flex-1 min-w-0 flex items-center gap-2.5">
                     <Grid3X3 className="w-4 h-4 text-green-500 flex-shrink-0" />

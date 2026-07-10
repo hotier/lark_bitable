@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { savePreviewToken } from '@/lib/preview-token-store';
+import { logger } from '@/lib/logger';
 
 /**
  * POST /api/bitable/files/token
@@ -25,8 +26,8 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({ id });
-  } catch (error: any) {
-    console.error('[FileToken] 生成失败:', error);
+  } catch (error) {
+    logger.error('[FileToken] 生成失败:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : '生成失败' },
       { status: 500 }

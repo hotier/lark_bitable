@@ -12,9 +12,11 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
-  Play, Save, Plus, Trash2, Copy, Zap,
-  Loader2, LayoutGrid,
+  Save, Plus, Trash2, Copy, Zap,
+  Loader2, LayoutGrid, ScrollText, X,
 } from 'lucide-react';
+
+import ExecutionList from '@/app/components/executions/ExecutionList';
 
 import { useWorkflowEditorStore, NODE_TYPES } from '@/lib/workflow-engine/editor-store';
 import { nodeRegistry } from '@/lib/workflow-engine/node-registry';
@@ -30,12 +32,11 @@ interface WorkflowCanvasProps {
   onListTables?: (appToken: string) => Promise<{ table_id: string; name: string }[]>;
   onListFields?: (appToken: string, tableId: string) => Promise<Field[]>;
   onSave?: (workflow: Workflow) => Promise<void>;
-  onTest?: () => void;
   targetWorkflowId?: string;
 }
 
 function WorkflowCanvasInner({
-  apps, workflow, onListTables, onListFields, onSave, onTest,
+  apps, workflow, onListTables, onListFields, onSave,
 }: Omit<WorkflowCanvasProps, 'targetWorkflowId'>) {
   const {
     nodes, edges, onNodesChange, onEdgesChange, onConnect,
@@ -43,10 +44,11 @@ function WorkflowCanvasInner({
     selectedNodeId, setSelectedNodeId,
     addNode, deleteNode, duplicateNode,
     getWorkflow, initFromScratch, setWorkflow, setApps,
-    layoutNodes,
+    layoutNodes, workflowId,
   } = useWorkflowEditorStore();
 
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
   const [saving, setSaving] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
 
@@ -136,7 +138,7 @@ function WorkflowCanvasInner({
   }, [selectedNodeId, deleteNode, duplicateNode, handleSave]);
 
   return (
-    <div className="flex h-full w-full" style={{ background: 'var(--bg)' }}>
+    <div className="flex h-full w-full relative" style={{ background: 'var(--bg)' }}>
 
       <div className="flex-1 flex flex-col min-w-0">
         {/* Toolbar */}
@@ -186,14 +188,19 @@ function WorkflowCanvasInner({
 
             <div className="w-px h-5 bg-neutral-200" />
             <button
+              onClick={() => setShowLogs(true)}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50 transition-colors"
+              title="查看运行日志"
+            >
+              <ScrollText className="w-3.5 h-3.5" />运行日志
+            </button>
+            <button
               onClick={layoutNodes}
               className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50 transition-colors"
               title="自动布局"
             >
               <LayoutGrid className="w-3.5 h-3.5" />布局
             </button>
-            <button onClick={onTest} className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50 transition-colors">
-              <Play className="w-3.5 h-3.5" />测试</button>
             <button onClick={handleSave} disabled={saving}
               className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-neutral-800 text-white hover:bg-neutral-900 transition-colors disabled:opacity-50">
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
@@ -203,7 +210,7 @@ function WorkflowCanvasInner({
         </div>
 
         {/* Canvas */}
-        <div className="flex-1 relative" style={{ background: '#f8fafc' }}>
+        <div className="flex-1 relative" style={{ background: 'var(--canvas-bg)' }}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -222,13 +229,13 @@ function WorkflowCanvasInner({
             maxZoom={2}
             defaultEdgeOptions={{
               type: 'default',
-              style: { stroke: '#b0b7c3', strokeWidth: 1.5 },
-              markerEnd: { type: 'arrowclosed', width: 12, height: 12, color: '#b0b7c3' },
+              style: { stroke: 'var(--canvas-edge)', strokeWidth: 1.5 },
+              markerEnd: { type: 'arrowclosed', width: 12, height: 12, color: 'var(--canvas-edge)' },
             }}
             connectionLineStyle={{ stroke: '#6366f1', strokeWidth: 2 }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#e2e8f0" />
+            <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--canvas-dot)" />
             <Controls className="!rounded-lg !border !border-neutral-200 !shadow-sm" />
             <MiniMap
               className="!rounded-lg !border !border-neutral-200 !shadow-sm"
@@ -240,6 +247,28 @@ function WorkflowCanvasInner({
 
       {/* 右侧统一面板 */}
       <RightPanel onListTables={onListTables} onListFields={onListFields} />
+
+      {/* 运行日志内嵌弹层 */}
+      {showLogs && (
+        <div className="absolute inset-0 z-50 flex flex-col bg-white">
+          <div className="flex items-center justify-between h-11 px-4 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900">
+              <ScrollText className="w-4 h-4 text-neutral-500" />
+              运行日志
+            </div>
+            <button
+              onClick={() => setShowLogs(false)}
+              className="p-1.5 rounded-md hover:bg-neutral-100 transition-colors"
+              title="关闭"
+            >
+              <X className="w-4 h-4 text-neutral-500" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <ExecutionList workflowId={workflowId} compact />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { logger } from '@/lib/logger';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96-bit IV for GCM
@@ -15,9 +16,20 @@ function getKey(): Buffer {
     if (process.env.NODE_ENV === 'production') {
       throw new Error('生产环境必须配置 APP_SECRET 环境变量');
     }
-    console.warn('[crypto] APP_SECRET 未配置，使用开发环境 fallback 密钥');
+    logger.warn('[crypto] APP_SECRET 未配置，使用开发环境 fallback 密钥');
   }
   return crypto.createHash('sha256').update(secret || 'fallback-dev-key-change-me').digest();
+}
+
+/**
+ * 恒定时间字符串比较，防止时序攻击（token / 签名校验场景）。
+ * 长度不同直接返回 false；长度相同用 crypto.timingSafeEqual 逐字节比较。
+ */
+export function timingSafeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 /**

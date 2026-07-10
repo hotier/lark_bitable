@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { bitableService } from '@/services/feishu-bitable';
+import { logger } from '@/lib/logger';
 
 /**
  * GET /api/bitable/files/download?file_token=xxx&table_id=xxx&field_id=xxx&record_id=xxx
@@ -32,8 +33,8 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json({ url: tmpUrl });
-  } catch (error: any) {
-    console.error('[FileSigned] 签发链接异常:', error);
+  } catch (error) {
+    logger.error('[FileSigned] 签发链接异常:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : '签发失败' },
       { status: 500 }

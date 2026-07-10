@@ -6,6 +6,7 @@ import { Zap, Settings, ClipboardList, Link, Clock, Calendar, Filter, Timer, X, 
 import type { Field, Workflow, WorkflowNode, NodeKind, CrdAction, FieldMapping, FilterCondition, FilterOp, App, Table, TriggerKind } from '@/types';
 import { CRUD_ACTION_META, TRIGGER_KIND_META } from '@/types';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
+import { CustomSelect } from '@/app/components/CustomSelect';
 
 /** 递归扁平化对象 key：{a:{b:1}, c:2} → ["a.b","c"] */
 function flattenKeys(obj: unknown, prefix = ''): string[] {
@@ -137,11 +138,11 @@ function resolveWebhookUrl(path: string): string {
 
 function makeDefaultWorkflow(existingNames?: Set<string>): Workflow {
   // 生成唯一默认名称
-  let defaultName = '机器人指令 1';
+  let defaultName = '工作流 1';
   if (existingNames) {
     let i = 1;
-    while (existingNames.has(`机器人指令 ${i}`)) i++;
-    defaultName = `机器人指令 ${i}`;
+    while (existingNames.has(`工作流 ${i}`)) i++;
+    defaultName = `工作流 ${i}`;
   }
   return {
     id: idGen(),
@@ -330,7 +331,7 @@ function ActionConfigPanel({
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
 
       {/* 面板 */}
-      <div className="fixed right-0 top-0 bottom-0 w-[480px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[480px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         {/* 头部 */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100">
           <div className="flex items-center gap-2.5">
@@ -803,20 +804,16 @@ function FieldMappingRow({
   return (
     <div className="flex gap-2 items-start">
       {/* 字段名下拉 */}
-      <select
+      <CustomSelect
         value={mapping.fieldId}
-        onChange={(e) => {
-          const f = availableFields.find((ff) => ff.field_id === e.target.value);
+        onChange={(val) => {
+          const f = availableFields.find((ff) => ff.field_id === val);
           if (f) onChange({ fieldId: f.field_id, fieldName: f.name, fieldType: f.type });
         }}
-        className="w-[140px] shrink-0 px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white text-neutral-700 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-300 truncate"
-      >
-        {availableFields.map((f) => (
-          <option key={f.field_id} value={f.field_id} disabled={f.field_id !== mapping.fieldId && usedFieldIds.includes(f.field_id)}>
-            {f.name}
-          </option>
-        ))}
-      </select>
+        options={availableFields.map((f) => ({ id: f.field_id, name: f.name }))}
+        disabledOptions={usedFieldIds.filter((id) => id !== mapping.fieldId)}
+        className="w-[140px] shrink-0"
+      />
 
       {/* 值输入区 — ⊕ 按钮嵌入在输入框内部右侧 */}
       <div className="flex-1 relative">
@@ -926,33 +923,31 @@ function FilterRow({
   return (
     <div className="flex items-start gap-2 bg-neutral-50 rounded-md p-2.5 border border-neutral-100">
       {/* 字段下拉 */}
-      <select
+      <CustomSelect
         value={filter.fieldId}
-        onChange={(e) => {
-          const field = availableFields.find((ff) => ff.field_id === e.target.value);
-          onChange({ fieldId: e.target.value, fieldName: field?.name ?? '' });
+        onChange={(val) => {
+          const field = availableFields.find((ff) => ff.field_id === val);
+          onChange({ fieldId: val, fieldName: field?.name ?? '' });
         }}
-        className="px-2 py-1.5 border border-neutral-200 rounded-lg text-xs bg-white text-neutral-600 focus:outline-none min-w-0 flex-1 truncate"
-      >
-        {availableFields.map((ff) => (
-          <option key={ff.field_id} value={ff.field_id}>{ff.name}</option>
-        ))}
-      </select>
+        options={availableFields.map((ff) => ({ id: ff.field_id, name: ff.name }))}
+        className="min-w-0 flex-1"
+      />
 
       {/* 运算符下拉 */}
-      <select
+      <CustomSelect
         value={filter.operator}
-        onChange={(e) => onChange({ operator: e.target.value as FilterOp })}
-        className="px-2 py-1.5 border border-neutral-200 rounded-lg text-xs bg-white text-neutral-600 focus:outline-none w-[72px] shrink-0 truncate"
-      >
-        <option value="eq">等于</option>
-        <option value="ne">不等于</option>
-        <option value="contains">包含</option>
-        <option value="gt">大于</option>
-        <option value="lt">小于</option>
-        <option value="gte">大于等于</option>
-        <option value="lte">小于等于</option>
-      </select>
+        onChange={(val) => onChange({ operator: val as FilterOp })}
+        options={[
+          { id: 'eq', name: '等于' },
+          { id: 'ne', name: '不等于' },
+          { id: 'contains', name: '包含' },
+          { id: 'gt', name: '大于' },
+          { id: 'lt', name: '小于' },
+          { id: 'gte', name: '大于等于' },
+          { id: 'lte', name: '小于等于' },
+        ]}
+        className="w-[72px] shrink-0"
+      />
 
       {/* 值输入区 — ⊕ 按钮在内 */}
       <div className="flex-1 relative min-w-0">
@@ -1308,16 +1303,13 @@ function DelayInlineEditor({
         className="w-14 px-1.5 py-0.5 border border-neutral-200 rounded text-xs text-center focus:outline-none focus:ring-2 focus:ring-orange-200"
         onClick={(e) => e.stopPropagation()}
       />
-      <select
-        value={config.unit}
-        onChange={(e) => onChange({ ...config, unit: e.target.value as import('@/types').DelayConfig['unit'] })}
-        className="px-1.5 py-0.5 border border-neutral-200 rounded text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 truncate"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {Object.entries(unitLabel).map(([k, v]) => (
-          <option key={k} value={k}>{v}</option>
-        ))}
-      </select>
+      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+        <CustomSelect
+          value={config.unit}
+          onChange={(val) => onChange({ ...config, unit: val as import('@/types').DelayConfig['unit'] })}
+          options={Object.entries(unitLabel).map(([k, v]) => ({ id: k, name: v }))}
+        />
+      </div>
     </div>
   );
 }
@@ -1395,8 +1387,8 @@ function TriggerConfigPanel({
     try {
       JSON.parse(value);
       setJsonError('');
-    } catch (e: any) {
-      setJsonError(e.message);
+    } catch (e) {
+      setJsonError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -1425,7 +1417,7 @@ function TriggerConfigPanel({
   return (
     <>
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
           <span className="text-base font-semibold text-neutral-800">触发配置</span>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-neutral-100 flex items-center justify-center text-neutral-400">
@@ -1619,7 +1611,7 @@ function FilterConfigPanel({
   return (
     <>
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[480px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[480px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
           <span className="text-base font-semibold text-neutral-800">筛选条件配置</span>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-neutral-100 flex items-center justify-center text-neutral-400">
@@ -1654,10 +1646,20 @@ function FilterConfigPanel({
                 {conditions.map((c, i) => (
                   <div key={i} className="flex items-center gap-2 p-3 bg-neutral-50 rounded-lg border border-neutral-100">
                     <input type="text" value={c.fieldName} onChange={(e) => updateCondition(i, { fieldName: e.target.value })} placeholder="字段名" className="flex-1 px-2 py-1.5 border border-neutral-200 rounded text-xs focus:outline-none focus:ring-2 focus:ring-purple-200" />
-                    <select value={c.operator} onChange={(e) => updateCondition(i, { operator: e.target.value as FilterOp })} className="px-2 py-1.5 border border-neutral-200 rounded text-xs bg-white focus:outline-none focus:ring-2 focus:ring-purple-200 truncate">
-                      <option value="eq">等于</option><option value="ne">不等于</option><option value="contains">包含</option>
-                      <option value="gt">大于</option><option value="lt">小于</option><option value="gte">大于等于</option><option value="lte">小于等于</option>
-                    </select>
+                    <CustomSelect
+                      value={c.operator}
+                      onChange={(val) => updateCondition(i, { operator: val as FilterOp })}
+                      options={[
+                        { id: 'eq', name: '等于' },
+                        { id: 'ne', name: '不等于' },
+                        { id: 'contains', name: '包含' },
+                        { id: 'gt', name: '大于' },
+                        { id: 'lt', name: '小于' },
+                        { id: 'gte', name: '大于等于' },
+                        { id: 'lte', name: '小于等于' },
+                      ]}
+                      className="w-28 shrink-0"
+                    />
                     <input type="text" value={c.value} onChange={(e) => updateCondition(i, { value: e.target.value })} placeholder="值" className="w-24 px-2 py-1.5 border border-neutral-200 rounded text-xs focus:outline-none focus:ring-2 focus:ring-purple-200" />
                     <button type="button" onClick={() => removeCondition(i)} className="text-neutral-300 hover:text-red-400 p-1"><X className="w-4 h-4" /></button>
                   </div>
@@ -1702,7 +1704,7 @@ function DelayConfigPanel({
   return (
     <>
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[480px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[480px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
           <span className="text-base font-semibold text-neutral-800">延时配置</span>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-neutral-100 flex items-center justify-center text-neutral-400">
@@ -1715,9 +1717,12 @@ function DelayConfigPanel({
             <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">延迟时间</label>
             <div className="flex gap-2">
               <input type="number" min={1} value={duration} onChange={(e) => setDuration(Math.max(1, Number(e.target.value)))} className="w-24 px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
-              <select value={unit} onChange={(e) => setUnit(e.target.value as import('@/types').DelayConfig['unit'])} className="px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 truncate">
-                {unitOptions.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
-              </select>
+              <CustomSelect
+                value={unit}
+                onChange={(val) => setUnit(val as import('@/types').DelayConfig['unit'])}
+                options={unitOptions.map((u) => ({ id: u.value, name: u.label }))}
+                className="flex-1 min-w-0"
+              />
             </div>
             <p className="text-[11px] text-neutral-400 mt-1.5">最大延迟 5 分钟（受服务器超时限制）。延迟超过 5 分钟将被截断。</p>
           </div>
@@ -1784,7 +1789,7 @@ function HttpRequestConfigPanel({
   return (
     <>
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
           <span className="text-base font-semibold text-neutral-800">HTTP 请求配置</span>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-neutral-100 flex items-center justify-center text-neutral-400">
@@ -1796,9 +1801,12 @@ function HttpRequestConfigPanel({
           <div>
             <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">请求方法 & URL</label>
             <div className="flex gap-2">
-              <select value={method} onChange={(e) => setMethod(e.target.value as import('@/types').HttpRequestConfig['method'])} className="w-24 px-2 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-teal-200 font-mono truncate">
-                {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
+              <CustomSelect
+                value={method}
+                onChange={(val) => setMethod(val as import('@/types').HttpRequestConfig['method'])}
+                options={['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((m) => ({ id: m, name: m }))}
+                className="w-24 shrink-0"
+              />
               <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/api" className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-teal-200" />
             </div>
           </div>
@@ -1908,7 +1916,7 @@ function ImMessageConfigPanel({
   return (
     <>
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
           <span className="text-base font-semibold text-neutral-800">飞书消息配置</span>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-neutral-100 flex items-center justify-center text-neutral-400">
@@ -1920,9 +1928,18 @@ function ImMessageConfigPanel({
           {/* 接收人 */}
           <div>
             <label className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-2 block">接收人</label>
-            <select value={receiveIdType} onChange={(e) => setReceiveIdType(e.target.value as import('@/types').ImMessageConfig['receiveIdType'])} className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-violet-200 truncate">
-              <option value="open_id">Open ID</option><option value="user_id">User ID</option><option value="union_id">Union ID</option><option value="email">邮箱</option><option value="chat_id">群聊 ID</option>
-            </select>
+            <CustomSelect
+              value={receiveIdType}
+              onChange={(val) => setReceiveIdType(val as import('@/types').ImMessageConfig['receiveIdType'])}
+              options={[
+                { id: 'open_id', name: 'Open ID' },
+                { id: 'user_id', name: 'User ID' },
+                { id: 'union_id', name: 'Union ID' },
+                { id: 'email', name: '邮箱' },
+                { id: 'chat_id', name: '群聊 ID' },
+              ]}
+              className="mb-2"
+            />
             <div className="flex gap-2 mb-2">
               {(['manual', 'webhook'] as const).map((s) => (
                 <button key={s} type="button" onClick={() => setReceiveIdSource(s)} className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium border transition-colors ${receiveIdSource === s ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-neutral-200 text-neutral-500 hover:border-neutral-300'}`}>
@@ -2103,7 +2120,7 @@ function AddOperationPanel({
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
 
       {/* 面板 */}
-      <div className="fixed right-0 top-0 bottom-0 w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[520px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         {/* 头部 */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100">
           <span className="text-base font-semibold text-neutral-800">操作</span>
@@ -2605,7 +2622,7 @@ export default function WorkflowManager({
       <>
       <div>
         {/* 标题栏 */}
-        <h2 className="text-lg font-bold text-neutral-800">机器人指令</h2>
+        <h2 className="text-lg font-bold text-neutral-800">工作流</h2>
 
         {/* 卡片网格 */}
         <div className="grid grid-cols-4 gap-5">
@@ -2621,7 +2638,7 @@ export default function WorkflowManager({
             <div className="w-12 h-12 rounded-md bg-neutral-100 group-hover:bg-amber-100 flex items-center justify-center text-neutral-400 group-hover:text-amber-500 transition-colors">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4"/></svg>
             </div>
-            <span className="text-sm font-medium text-neutral-400 group-hover:text-amber-600 transition-colors">+ 新建机器人指令</span>
+            <span className="text-sm font-medium text-neutral-400 group-hover:text-amber-600 transition-colors">+ 新建工作流</span>
           </button>
 
           {/* 工作流卡片 */}
@@ -3087,7 +3104,7 @@ function OperationLogPanel({
   const fmtTime = (iso?: string) => {
     if (!iso) return '';
     const d = new Date(iso);
-    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
   /** 格式化耗时 */
@@ -3099,7 +3116,7 @@ function OperationLogPanel({
       <div className="fixed inset-0 bg-black/20 z-50" onClick={onClose} />
 
       {/* 面板 — 右侧滑出，与 webhook 配置面板风格一致 */}
-      <div className="fixed right-0 top-0 bottom-0 w-[600px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-[600px] bg-white shadow-lg z-50 flex flex-col animate-scale-in origin-right overflow-hidden">
         {/* 头部 */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
           <div className="flex items-center gap-2.5">

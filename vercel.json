@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/bitable/keepalive",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}

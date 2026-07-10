@@ -42,11 +42,19 @@ export const FIELD_TYPE_OPTIONS: { value: FieldType; label: string }[] = [
   { value: 'url', label: '链接' },
 ];
 
+/** 飞书单选/多选选项（用于把选项 id 解析为显示文字） */
+export interface FeishuSelectOption {
+  id: string;
+  text: string;
+}
+
 /** 字段定义 */
 export interface Field {
   field_id: string;
   name: string;
   type: FieldType;
+  /** 单选/多选字段的选项列表（用于把选项 id 还原为显示文字） */
+  options?: FeishuSelectOption[];
 }
 
 /** 数据表 */
@@ -674,6 +682,19 @@ export interface Workflow {
   status: WorkflowStatus;
   createdAt: string;
   updatedAt: string;
+  /** 节点数量快照（列表端点由 jsonb_array_length 计算，减少传输体积） */
+  nodeCount?: number;
+}
+
+/** 工作流摘要（列表卡片用，不含 nodes 内容） */
+export interface WorkflowSummary {
+  id: string;
+  name: string;
+  status: WorkflowStatus;
+  createdAt: string;
+  updatedAt: string;
+  /** 节点数量（服务端 jsonb_array_length 计算） */
+  nodeCount: number;
 }
 
 /** 所有节点操作类型的展示信息 */
@@ -782,4 +803,10 @@ export interface Execution {
   };
   /** 各步骤结果 */
   steps: ExecutionStep[];
+  /** 列表摘要用：步骤数量（避免传输完整 steps 导致响应过大） */
+  stepCount?: number;
+  /** 触发器类型：webhook / scheduled / bitable_event */
+  triggerKind?: TriggerKind;
+  /** 触发器快照（执行时记录的具体触发配置，如 webhook 地址 / cron / 事件表） */
+  triggerDetail?: Record<string, unknown>;
 }

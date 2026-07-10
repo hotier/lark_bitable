@@ -6,25 +6,24 @@
  * 优化要点：
  * - LRU 淘汰策略：超过 maxEntries 时移除最久未使用的条目
  * - TTL 可配置：通过环境变量 CACHE_TTL_MS 覆盖默认值
- * - 前缀索引：加速 cacheDelByPrefix（O(1) 代替 O(n)）
+ * - 前缀索引：辅助按前缀批量删除（cacheDelByPrefix 做 startsWith 扫描）
  */
 
 // ── 可配置参数 ──
 const DEFAULT_TTL = Number(process.env.CACHE_TTL_MS) || 300_000; // 默认 5 分钟
 const RECORD_TTL  = Math.max(60_000, Math.floor(DEFAULT_TTL / 2)); // 记录缓存 2.5 分钟
 
-/** 分层 TTL：不同数据类型用不同策略 */
+/**
+ * 分层 TTL：飞书数据靠强制同步按钮主动刷新，
+ * 因此统一用 30 分钟长缓存以减少 API 调用；
+ * 经由本应用自身的写操作仍会 cacheDel 立即失效。
+ */
 export const TTL = {
-  /** 应用/文档列表 — 极少变化，10 分钟 */
-  APPS:  10 * 60_000,
-  /** 数据表列表 — 较少变化，5 分钟 */
-  TABLES: 5 * 60_000,
-  /** 字段列表 — 极少变化，10 分钟 */
-  FIELDS: 10 * 60_000,
-  /** 记录列表 — 变化较多，2 分钟 */
-  RECORDS: 2 * 60_000,
-  /** 单条记录 — 1 分钟 */
-  RECORD: 60_000,
+  APPS:   30 * 60_000, // 多维表格 / 云文档 / 电子表格列表
+  TABLES: 30 * 60_000, // 数据表列表
+  FIELDS: 30 * 60_000, // 字段列表
+  RECORDS:30 * 60_000, // 记录列表
+  RECORD: 30 * 60_000, // 单条记录
 } as const;
 
 const MAX_ENTRIES = 2000;
@@ -148,18 +147,16 @@ export function cacheDel(key: string): void {
   store.delete(key);
 }
 
-/** 按前缀批量删除（利用前缀索引 O(匹配数)） */
+/** 按前缀批量删除（key 以 prefix 开头即删除；同时清理 LRU 与前缀索引） */
 export function cacheDelByPrefix(prefix: string): void {
-  const keys = prefixIndex.get(prefix);
-  if (keys) {
-    for (const key of keys) {
-      const entry = store.get(key);
-      if (entry) {
-        listRemove(entry);
-        store.delete(key);
-      }
+  for (const key of Array.from(store.keys())) {
+    if (!key.startsWith(prefix)) continue;
+    const entry = store.get(key);
+    if (entry) {
+      removePrefixIndex(entry.key);
+      listRemove(entry);
+      store.delete(key);
     }
-    prefixIndex.delete(prefix);
   }
 }
 

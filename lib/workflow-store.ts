@@ -6,7 +6,13 @@
  */
 
 import { sql } from '@/lib/db';
-import type { Workflow, WorkflowNode } from '@/types';
+import type { Workflow, WorkflowNode, WorkflowSummary } from '@/types';
+
+/** 缓存 key 与 TTL（与 app/api/workflows 路由共享） */
+export const WF_CACHE_KEY = 'api:workflows';
+export const WF_LIST_CACHE_KEY = 'api:workflows:list';
+export const WF_TTL = 15_000;          // 节点缓存：写即失效 + 15s 兜底
+export const WF_LIST_TTL = 5 * 60_000; // 列表缓存：事件失效 + 5min 兜底
 
 /** 读取所有工作流 */
 export async function loadWorkflows(): Promise<Workflow[]> {
@@ -22,6 +28,24 @@ export async function loadWorkflows(): Promise<Workflow[]> {
     status: r.status as Workflow['status'],
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
+  }));
+}
+
+/** 读取工作流摘要列表（列表卡片用，不加载 nodes 内容） */
+export async function loadWorkflowSummaries(): Promise<WorkflowSummary[]> {
+  const rows = await sql()`
+    SELECT id, name, status, created_at, updated_at,
+           jsonb_array_length(COALESCE(nodes, '[]'::jsonb)) AS node_count
+    FROM workflows
+    ORDER BY created_at DESC
+  `;
+  return rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    status: r.status as Workflow['status'],
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+    nodeCount: Number(r.node_count) || 0,
   }));
 }
 

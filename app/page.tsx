@@ -13,15 +13,15 @@ const SERVICE_CARDS = [
   {
     href: '/bitable',
     icon: Table2,
-    title: '多维表格管理',
+    title: '多维表格',
     desc: '管理表格、数据表与记录',
     accent: 'amber',
-    stat: '多表格 · 全字段 · 记录 CRUD',
+    stat: '多维表格 · 全字段 · 记录 CRUD',
   },
   {
     href: '/docs',
     icon: FileText,
-    title: '云文档管理',
+    title: '云文档',
     desc: '管理飞书云文档',
     accent: 'sky',
     stat: '文档列表 · 创建 · 删除',
@@ -29,7 +29,7 @@ const SERVICE_CARDS = [
   {
     href: '/sheets',
     icon: Grid3X3,
-    title: '在线表格管理',
+    title: '在线表格',
     desc: '管理飞书电子表格',
     accent: 'emerald',
     stat: '表格列表 · 创建 · 删除',
@@ -37,7 +37,7 @@ const SERVICE_CARDS = [
   {
     href: '/flow',
     icon: Workflow,
-    title: '机器人指令',
+    title: '工作流',
     desc: 'Webhook 自动化工作流',
     accent: 'violet',
     stat: '自定义触发 · CRUD 编排',
@@ -131,7 +131,7 @@ export default function RootPage() {
   /* ───── Loading ───── */
   if (checking) {
     return (
-      <div className="h-screen flex flex-col items-center justify-center gap-6" style={{ background: '#faf8f5' }}>
+      <div className="h-screen flex flex-col items-center justify-center gap-6" style={{ background: 'var(--page-bg)' }}>
         <style>{ANIM_STYLES}</style>
         <div className="relative">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg shadow-amber-500/30">
@@ -148,7 +148,7 @@ export default function RootPage() {
      =======  统 一 布 局  =======
      ═════════════════════════════════════════ */
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden" style={{ background: '#faf8f5' }}>
+    <div className="min-h-screen flex flex-col relative overflow-hidden" style={{ background: 'var(--page-bg)' }}>
       <style>{ANIM_STYLES}</style>
 
       {/* ── 背景 ── */}
@@ -174,7 +174,7 @@ export default function RootPage() {
 
       {/* ═══════════ Header（仅已登录） ═══════════ */}
       {isAuthenticated && (
-        <header className="relative z-40 backdrop-blur-xl border-b border-neutral-200/60" style={{ background: 'rgba(250,248,245,0.85)' }}>
+        <header className="relative z-40 backdrop-blur-xl border-b border-neutral-200/60" style={{ background: 'var(--header-bg)' }}>
           <div className="px-6 h-16 flex items-center justify-between">
             <div className="flex items-center gap-3.5">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-white flex items-center justify-center shadow-lg shadow-amber-500/25">

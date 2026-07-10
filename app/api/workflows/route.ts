@@ -7,11 +7,9 @@
  */
 
 import { NextResponse } from 'next/server';
-import { saveWorkflows, loadWorkflows } from '@/lib/workflow-store';
-import { withCache, cacheKey, cacheDel } from '@/lib/cache';
-
-const WF_CACHE_KEY = cacheKey('api', 'workflows');
-const WF_TTL = 15_000; // 15 秒缓存
+import { saveWorkflows, loadWorkflows, WF_CACHE_KEY, WF_LIST_CACHE_KEY, WF_TTL } from '@/lib/workflow-store';
+import { withCache, cacheDel } from '@/lib/cache';
+import { logger } from '@/lib/logger';
 
 export async function POST(request: Request) {
   try {
@@ -20,12 +18,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '缺少参数: workflows' }, { status: 400 });
     }
     await saveWorkflows(workflows);
-    // 写操作后立即失效缓存，确保下次 GET 读到最新数据
+    // 写操作后立即失效缓存，确保下次读取（列表与节点）读到最新数据
     cacheDel(WF_CACHE_KEY);
+    cacheDel(WF_LIST_CACHE_KEY);
     return NextResponse.json({ success: true });
-  } catch (error: any) {
-    console.error('[api/workflows] 保存失败:', error);
-    return NextResponse.json({ error: error.message || '保存失败' }, { status: 500 });
+  } catch (error) {
+    logger.error('[api/workflows] 保存失败:', error);
+    const message = error instanceof Error ? error.message : '保存失败';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -37,8 +37,9 @@ export async function GET() {
       WF_TTL,
     );
     return NextResponse.json({ workflows });
-  } catch (error: any) {
-    console.error('[api/workflows] 读取失败:', error);
-    return NextResponse.json({ error: error.message || '读取失败' }, { status: 500 });
+  } catch (error) {
+    logger.error('[api/workflows] 读取失败:', error);
+    const message = error instanceof Error ? error.message : '读取失败';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

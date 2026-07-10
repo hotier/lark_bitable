@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bot, Plus, Trash2, ArrowRight, Clock, Layers, Search } from 'lucide-react';
-import type { Workflow } from '@/types';
+import { Workflow as WorkflowIcon, Plus, Trash2, Clock, Layers, Search } from 'lucide-react';
+import type { Workflow, WorkflowSummary } from '@/types';
 import { idGen } from '@/lib/workflow-engine/editor-store';
 import Toast from '@/app/components/Toast';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
+import TopBar from '@/app/components/TopBar';
+import { logout as apiLogout } from '@/lib/api';
 
 const STORAGE_KEY = 'bitable_workflows';
 
@@ -30,6 +32,8 @@ export default function FlowPage() {
   const [search, setSearch] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: string; type: 'info' | 'success' | 'error'; text: string }[]>([]);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
 
   const addToast = useCallback((type: 'info' | 'success' | 'error', text: string) => {
     const tid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -48,18 +52,82 @@ export default function FlowPage() {
       setIsLoading(false);
     }
 
-    // 从服务端同步
-    fetch('/api/workflows')
+    // 从服务端同步（列表端点：轻量摘要，不含 nodes）
+    fetch('/api/workflows/list')
       .then((r) => r.json())
       .then((data) => {
-        const serverList = (data.workflows as Workflow[]) || [];
-        if (serverList.length > 0) {
-          setWorkflows(serverList);
-          saveWorkflowsToStorage(serverList);
+        const serverList = (data.workflows as WorkflowSummary[]) || [];
+        if (serverList.length === 0) return;
+
+        // 合并：以 updatedAt 较新者为准，避免服务端陈旧数据覆盖本地刚保存的修改
+        const localMap = new Map(local.map((w) => [w.id, w]));
+        const merged: Workflow[] = serverList.map((s) => {
+          const l = localMap.get(s.id);
+          if (l && new Date(l.updatedAt).getTime() > new Date(s.updatedAt).getTime()) return l;
+          // server 较新：用摘要字段，nodes 回退到本地（若有）
+          return {
+            id: s.id,
+            name: s.name,
+            status: s.status,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            nodes: l?.nodes ?? [],
+            nodeCount: s.nodeCount,
+          };
+        });
+        // 保留仅存在于本地的工作流
+        for (const w of local) {
+          if (!merged.some((m) => m.id === w.id)) merged.push(w);
         }
+
+        setWorkflows(merged);
+        saveWorkflowsToStorage(merged);
       })
       .catch(() => {})
       .finally(() => setIsLoading(false));
+  }, []);
+
+  // 认证状态（AuthGuard 已校验，这里仅用于渲染账户控件）
+  useEffect(() => { setIsAuthenticated(true); }, []);
+
+  // 顶部「已连接飞书」按钮：从服务端重新同步工作流
+  const handleSync = useCallback(async () => {
+    setAuthLoading(true);
+    try {
+    const r = await fetch('/api/workflows/list');
+    const data = await r.json();
+    const serverList = (data.workflows as WorkflowSummary[]) || [];
+    setWorkflows((prev) => {
+      const localMap = new Map(prev.map((w) => [w.id, w]));
+      const merged: Workflow[] = serverList.map((s) => {
+        const l = localMap.get(s.id);
+        if (l && new Date(l.updatedAt).getTime() > new Date(s.updatedAt).getTime()) return l;
+        return {
+          id: s.id,
+          name: s.name,
+          status: s.status,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+          nodes: l?.nodes ?? [],
+          nodeCount: s.nodeCount,
+        };
+      });
+      for (const w of prev) {
+        if (!merged.some((m) => m.id === w.id)) merged.push(w);
+      }
+      saveWorkflowsToStorage(merged);
+      return merged;
+    });
+    } catch {
+      addToast('error', '同步工作流失败');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [addToast]);
+
+  const handleLogout = useCallback(async () => {
+    await apiLogout();
+    window.location.replace('/');
   }, []);
 
   // 新建工作流
@@ -108,6 +176,25 @@ export default function FlowPage() {
     setDeleteConfirmId(null);
   }, []);
 
+  // 启停切换：仅修改工作流运行状态，与编辑/保存结构无关，立即持久化
+  const handleToggleStatus = useCallback((id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = workflows.map((w) =>
+      w.id === id
+        ? { ...w, status: (w.status === 'enabled' ? 'disabled' : 'enabled') as Workflow['status'], updatedAt: new Date().toISOString() }
+        : w,
+    );
+    setWorkflows(updated);
+    saveWorkflowsToStorage(updated);
+    fetch('/api/workflows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workflows: updated }),
+    }).catch(() => {});
+  }, [workflows]);
+
+
+
   // 过滤
   const filtered = search
     ? workflows.filter((w) => w.name.toLowerCase().includes(search.toLowerCase()))
@@ -117,52 +204,30 @@ export default function FlowPage() {
   const fmtDate = (s: string) => {
     try {
       const d = new Date(s);
-      return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     } catch { return s; }
   };
 
-  const statusLabel = (s: Workflow['status']) =>
-    s === 'enabled' ? '已启用' : s === 'disabled' ? '已禁用' : '草稿';
 
-  const statusColor = (s: Workflow['status']) =>
-    s === 'enabled' ? 'bg-emerald-100 text-emerald-700' :
-    s === 'disabled' ? 'bg-red-100 text-red-700' :
-    'bg-neutral-100 text-neutral-500';
 
   return (
     <div className="flex flex-col h-full">
       <Toast messages={toasts} onDismiss={dismissToast} />
 
       {/* Header */}
-      <header
-        className="sticky top-0 z-20 flex items-center justify-between h-14 px-6 flex-shrink-0"
-        style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
+      <TopBar
+        isAuthenticated={isAuthenticated} isLoading={authLoading}
+        onFetchApps={handleSync} onLogout={handleLogout}
       >
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span
-              className="w-7 h-7 rounded-md flex items-center justify-center"
-              style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
-            >
-              <Bot className="w-4 h-4" />
-            </span>
-            <h1 className="text-sm font-semibold text-neutral-900">机器人指令</h1>
-          </div>
-          <span className="text-xs text-neutral-400">Webhook 自动化工作流</span>
+        <div className="flex items-center gap-3">
+          <WorkflowIcon className="w-5 h-5 text-violet-500" />
+          <h1 className="text-base font-semibold text-neutral-900">工作流</h1>
         </div>
+      </TopBar>
 
-        <button
-          onClick={handleCreate}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-white transition-colors bg-violet-500 hover:bg-violet-600"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          新建工作流
-        </button>
-      </header>
-
-      {/* Search bar */}
-      <div className="px-6 py-3 flex-shrink-0">
-        <div className="relative max-w-sm">
+      {/* 操作栏：搜索框 + 新建工作流（同一行，靠右） */}
+      <div className="flex items-center justify-between gap-3 px-6 py-6">
+        <div className="relative w-72">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
           <input
             type="text"
@@ -172,6 +237,13 @@ export default function FlowPage() {
             className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 placeholder:text-neutral-400"
           />
         </div>
+        <button
+          onClick={handleCreate}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg text-white transition-colors bg-violet-500 hover:bg-violet-600"
+        >
+          <Plus className="w-4 h-4" />
+          新建工作流
+        </button>
       </div>
 
       {/* Content */}
@@ -180,7 +252,7 @@ export default function FlowPage() {
           <div className="flex items-center justify-center h-64 text-neutral-400 text-sm">加载中...</div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 text-neutral-400">
-            <Bot className="w-12 h-12 mb-3 text-neutral-200" />
+            <WorkflowIcon className="w-12 h-12 mb-3 text-neutral-200" />
             {workflows.length === 0 ? (
               <>
                 <p className="text-sm font-medium">暂无工作流</p>
@@ -191,7 +263,7 @@ export default function FlowPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
             {filtered.map((wf) => (
               <div
                 key={wf.id}
@@ -202,25 +274,31 @@ export default function FlowPage() {
                   <div className="flex-1 min-w-0 mr-2">
                     <h3 className="text-sm font-semibold text-neutral-900 truncate">{wf.name}</h3>
                   </div>
-                  <span className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${statusColor(wf.status)}`}>
-                    {statusLabel(wf.status)}
-                  </span>
+                  <button
+                    onClick={(e) => handleToggleStatus(wf.id, e)}
+                    className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors ${
+                      wf.status === 'enabled' ? 'bg-emerald-500' : 'bg-neutral-300'
+                    }`}
+                    title={wf.status === 'enabled' ? '点击停止运行' : '点击启动运行'}
+                    aria-label={wf.status === 'enabled' ? '停止' : '启动'}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${
+                      wf.status === 'enabled' ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                    }`} />
+                  </button>
                 </div>
 
                 <div className="flex items-center gap-3 text-xs text-neutral-400 mb-3">
                   <span className="flex items-center gap-1">
                     <Layers className="w-3 h-3" />
-                    {wf.nodes.length} 节点
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {fmtDate(wf.updatedAt)}
+                    {wf.nodeCount ?? wf.nodes.length} 节点
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-neutral-400 truncate flex-1 mr-2">
-                    创建于 {fmtDate(wf.createdAt)}
+                  <span className="text-[11px] text-neutral-400 truncate flex-1 mr-2 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {fmtDate(wf.updatedAt)}
                   </span>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
@@ -230,7 +308,6 @@ export default function FlowPage() {
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
-                    <ArrowRight className="w-3.5 h-3.5 text-neutral-300 group-hover:text-neutral-500 transition-colors" />
                   </div>
                 </div>
               </div>

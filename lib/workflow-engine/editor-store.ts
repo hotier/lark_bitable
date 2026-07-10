@@ -92,10 +92,15 @@ interface WorkflowStore {
   updateNodeData: (nodeId: string, data: Partial<AppNodeData>) => void;
   setApps: (apps: { app_token: string; name: string }[]) => void;
   setWorkflowName: (name: string) => void;
+  setWorkflowStatus: (status: Workflow['status']) => void;
   getWorkflow: () => Workflow;
   reset: () => void;
   initFromScratch: () => void;
   layoutNodes: () => void;
+
+  // 未保存修改标记：任一编辑操作置 true，加载/保存后置 false
+  isDirty: boolean;
+  markSaved: () => void;
 }
 
 // ====== 节点创建（通过 Registry） ======
@@ -214,15 +219,22 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
   nodes: [],
   edges: [],
   onNodesChange: (changes) => {
-    set({ nodes: applyNodeChanges(changes, get().nodes as Node[]) as unknown as AppNode[] });
+    const nodes = applyNodeChanges(changes, get().nodes as Node[]) as unknown as AppNode[];
+    // 仅「选择 / 尺寸测量」变化不应标记为未保存
+    const meaningful = changes.some((c) => c.type !== 'select' && c.type !== 'dimensions');
+    set(meaningful ? { nodes, isDirty: true } : { nodes });
   },
   onEdgesChange: (changes) => {
-    set({ edges: applyEdgeChanges(changes, get().edges) });
+    const edges = applyEdgeChanges(changes, get().edges);
+    // 仅「选择」变化不应标记为未保存
+    const meaningful = changes.some((c) => c.type !== 'select');
+    set(meaningful ? { edges, isDirty: true } : { edges });
   },
 
   workflowId: '',
   workflowName: '未命名工作流',
   workflowStatus: 'draft',
+  isDirty: false,
 
   selectedNodeId: null,
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
@@ -276,6 +288,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
       workflowName: wf.name,
       workflowStatus: wf.status,
       selectedNodeId: null,
+      isDirty: false,
     });
   },
 
@@ -307,6 +320,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
       workflowName: '未命名工作流',
       workflowStatus: 'draft',
       selectedNodeId: null,
+      isDirty: false,
     });
   },
 
@@ -352,7 +366,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
     }
 
     const layout = layoutNodes(newNodes, newEdges);
-    set({ nodes: layout.nodes, edges: newEdges });
+    set({ nodes: layout.nodes, edges: newEdges, isDirty: true });
   },
 
   // ---- 删除节点 ----
@@ -386,6 +400,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
       nodes: layout.nodes,
       edges: newEdges,
       selectedNodeId: get().selectedNodeId === nodeId ? null : get().selectedNodeId,
+      isDirty: true,
     });
   },
 
@@ -406,7 +421,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
 
     const newNodes = [...nodes, duplicated];
     const layout = layoutNodes(newNodes, get().edges);
-    set({ nodes: layout.nodes });
+    set({ nodes: layout.nodes, isDirty: true });
   },
 
   // ---- 连接边 ----
@@ -454,7 +469,7 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
       style: { stroke: '#94a3b8', strokeWidth: 2 },
     };
 
-    set({ edges: [...edges, newEdge] });
+    set({ edges: [...edges, newEdge], isDirty: true });
   },
 
   // ---- 更新节点数据 ----
@@ -464,11 +479,14 @@ export const useWorkflowEditorStore = create<WorkflowStore>((set, get) => ({
       nodes: get().nodes.map((n) =>
         n.id === nodeId ? { ...n, data: { ...n.data, ...data } as AppNodeData } : n,
       ),
+      isDirty: true,
     });
   },
 
   setApps: (apps) => set({ apps }),
-  setWorkflowName: (name) => set({ workflowName: name }),
+  setWorkflowName: (name) => set({ workflowName: name, isDirty: true }),
+  setWorkflowStatus: (status) => set({ workflowStatus: status, isDirty: true }),
+  markSaved: () => set({ isDirty: false }),
 
   // ---- 序列化：React Flow → Workflow ----
 

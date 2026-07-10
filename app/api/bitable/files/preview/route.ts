@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { decrypt } from '@/lib/crypto';
 import { proxyFeishuFile } from '@/lib/preview-proxy';
+import { logger } from '@/lib/logger';
 
 /**
  * GET /api/bitable/files/preview?t=<encrypted_token>
@@ -37,8 +38,8 @@ export async function GET(request: Request) {
     }
 
     return proxyFeishuFile({ fileToken, tableId, fieldId, recordId, fileName });
-  } catch (error: any) {
-    console.error('[FilePreview] 预览异常:', error);
+  } catch (error) {
+    logger.error('[FilePreview] 预览异常:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : '预览失败' },
       { status: 500 }

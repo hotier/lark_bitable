@@ -10,8 +10,10 @@ import {
 } from '@/lib/api';
 import OAuthLogin from '@/app/components/OAuthLogin';
 import WorkflowCanvas from '@/app/components/workflow-editor/WorkflowCanvas';
+
 import Toast from '@/app/components/Toast';
-import Link from 'next/link';
+import { useWorkflowEditorStore } from '@/lib/workflow-engine/editor-store';
+import { GuardedLink, useNavigationGuard } from '@/app/components/NavigationGuard';
 
 const STORAGE_KEY = 'bitable_workflows';
 
@@ -36,6 +38,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [workflow, setWorkflow] = useState<Workflow | null | undefined>(undefined);
 
+
   const addToast = useCallback((type: ToastMessage['type'], text: string) => {
     const tid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     setToasts((prev) => [...prev, { id: tid, type, text }]);
@@ -43,6 +46,16 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
   const dismissToast = useCallback((tid: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== tid));
   }, []);
+
+  // 监听全局 toast 事件（供深层子组件如配置面板触发）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ type: ToastMessage['type']; text: string }>).detail;
+      if (detail) addToast(detail.type, detail.text);
+    };
+    window.addEventListener('app:toast', handler);
+    return () => window.removeEventListener('app:toast', handler);
+  }, [addToast]);
 
   useEffect(() => { setIsAuthenticated(true); }, []);
 
@@ -93,11 +106,28 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workflows: existing }),
     });
+    // 保存成功后清除未保存标记，避免离开时重复提示
+    useWorkflowEditorStore.getState().markSaved();
   }, []);
 
-  const handleTest = useCallback(() => {
-    addToast('info', '请在触发节点中查看 webhook URL，通过 HTTP POST 进行测试');
-  }, [addToast]);
+  const { registerSaveHandler, registerDiscardHandler } = useNavigationGuard();
+
+  // 将本页保存逻辑注册给导航守卫，供弹窗「保存」调用
+  useEffect(() => {
+    registerSaveHandler(handleSave);
+    return () => registerSaveHandler(null);
+  }, [registerSaveHandler, handleSave]);
+
+
+  // 将「恢复未更改状态」逻辑注册给导航守卫，供弹窗「取消」时调用
+  useEffect(() => {
+    registerDiscardHandler(() => {
+      const stored = loadWorkflowsFromStorage();
+      const found = stored.find((w) => w.id === id);
+      if (found) useWorkflowEditorStore.getState().setWorkflow(found);
+    });
+    return () => registerDiscardHandler(null);
+  }, [registerDiscardHandler, id]);
 
   return (
     <div className="flex flex-col h-full">
@@ -108,13 +138,13 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
         style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
       >
         <div className="flex items-center gap-4">
-          <Link
-            href="/flow"
-            className="flex items-center gap-1.5 text-sm font-medium text-neutral-400 hover:text-neutral-600 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            机器人指令
-          </Link>
+        <GuardedLink
+          href="/flow"
+          className="flex items-center gap-1.5 text-sm font-medium text-neutral-400 hover:text-neutral-600 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          工作流
+        </GuardedLink>
           <span className="text-neutral-300">/</span>
           <span className="w-6 h-6 rounded flex items-center justify-center"
             style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}>
@@ -128,7 +158,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
         />
       </header>
 
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 flex flex-col">
         {workflow === undefined ? (
           <div className="flex items-center justify-center h-full text-neutral-400">加载中...</div>
         ) : workflow === null ? (
@@ -137,7 +167,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
               <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
             </svg>
             <p className="text-base font-medium">工作流未找到</p>
-            <Link href="/flow" className="text-sm text-blue-500 mt-2 hover:underline">返回列表</Link>
+            <GuardedLink href="/flow" className="text-sm text-blue-500 mt-2 hover:underline">返回列表</GuardedLink>
           </div>
         ) : !isAuthenticated ? (
           <div className="flex flex-col items-center justify-center h-full text-neutral-400">
@@ -154,7 +184,6 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
             onListTables={handleListTablesForNode}
             onListFields={listFields}
             onSave={handleSave}
-            onTest={handleTest}
           />
         )}
       </div>

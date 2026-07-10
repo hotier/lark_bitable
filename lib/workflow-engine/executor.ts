@@ -5,7 +5,7 @@
  * 拓扑排序 + 变量传递保持不变。
  */
 
-import type { Workflow, WorkflowNode, Execution, ExecutionStep } from '@/types';
+import type { Workflow, WorkflowNode, Execution, ExecutionStep, TriggerKind } from '@/types';
 import { appendExecution } from '@/lib/execution-store';
 import { nodeRegistry, type ExecutionContext } from './node-registry';
 
@@ -71,8 +71,18 @@ export async function executeWorkflow(
   workflow: Workflow,
   webhookContent: Record<string, unknown>,
   secretToken?: string,
+  webhookUrl?: string,
 ): Promise<{ code: number; msg: string; data?: Record<string, unknown> }> {
   const startTime = Date.now();
+
+  // 0. 状态闸门：无论何种触发器（webhook / 定时 / 表格事件），
+  //    仅 enabled 的工作流允许执行，disabled / draft 直接拒绝，且不写入执行日志
+  if (workflow.status !== 'enabled') {
+    return {
+      code: 4,
+      msg: `workflow is ${workflow.status}, not enabled`,
+    };
+  }
 
   // 1. 构建边列表 — 优先使用持久化的边，回退到按数组顺序线性连接（向后兼容）
   const edges: EdgeDef[] = [];
@@ -135,6 +145,26 @@ export async function executeWorkflow(
 
   // 5. 写入执行日志
   const totalDuration = Date.now() - startTime;
+
+  // 从触发节点读取触发器类型与配置，作为动态触发来源展示
+  const triggerNode = workflow.nodes.find((n) => n.type === 'trigger');
+  const triggerCfg = triggerNode?.triggerConfig;
+  const triggerKind: TriggerKind = triggerCfg?.triggerKind ?? 'webhook';
+  const triggerDetail: Record<string, unknown> = {
+    // 优先使用路由实际匹配的 webhook 路径（保证地址恒非空），回退到触发器配置
+    webhookUrl: webhookUrl || triggerCfg?.webhookUrl,
+    ...(triggerKind === 'scheduled'
+      ? { cronExpression: triggerCfg?.cronExpression }
+      : {}),
+    ...(triggerKind === 'bitable_event'
+      ? {
+          eventAppToken: triggerCfg?.eventAppToken,
+          eventTableId: triggerCfg?.eventTableId,
+          eventType: triggerCfg?.eventType,
+        }
+      : {}),
+  };
+
   const execution: Execution = {
     id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
     workflowId: workflow.id,
@@ -147,6 +177,8 @@ export async function executeWorkflow(
       token: secretToken,
     },
     steps: ctx.steps,
+    triggerKind,
+    triggerDetail,
   };
   await appendExecution(execution);
 

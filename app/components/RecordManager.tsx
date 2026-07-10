@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History } from 'lucide-react';
 import type { Field, FieldType, BitableRecord } from '@/types';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
@@ -54,15 +54,21 @@ interface RecordManagerProps {
   onSwitchToTables: () => void;
   onCreateRecord: (fields: Record<string, unknown>) => Promise<void>;
   onDeleteRecord: (recordId: string) => Promise<void>;
-  onRefreshRecords: () => void;
+  /** 是否正在后台静默预热全量记录（展示加载进度动画） */
+  warming?: boolean;
+  /** 已加载到本地的记录数（配合 total 显示预热进度） */
+  loadedCount?: number;
   // 翻页
   currentPage: number;
-  hasMore: boolean;
   total: number;
   pageSize: number;
   onNextPage: () => void;
   onPrevPage: () => void;
   onGoToPage: (page: number) => void;
+  // 服务端排序：当前排序列与方向，以及点击表头触发回调
+  sortFieldId: string | null;
+  sortOrder: 'asc' | 'desc';
+  onSort: (fieldId: string) => void;
   /** 可选：仅展示这些字段列（不传则展示全部 fields） */
   displayFields?: Field[];
 }
@@ -117,19 +123,45 @@ function isDateField(type: FieldType): boolean {
   return type === 'date' || type === 'created_time' || type === 'updated_time';
 }
 
-/** 尝试将值转为日期（字符串或数字时间戳） */
+/** 尝试将值转为日期：兼容 number / 数字字符串 / {timestamp} 对象（飞书 date 字段常返回该结构） */
 function tryFormatDate(value: unknown): string | null {
-  if (typeof value === 'number') return formatDateTime(value);
-  if (typeof value === 'string') {
+  let ms: number | null = null;
+  if (typeof value === 'number') {
+    ms = value;
+  } else if (typeof value === 'string') {
     const n = Number(value);
-    // 合理的毫秒时间戳范围：> 946684800000（2000-01-01）
-    if (!Number.isNaN(n) && n > 946684800000) return formatDateTime(n);
+    if (!Number.isNaN(n) && n > 946684800000) ms = n; // 合理的毫秒时间戳范围：> 2000-01-01
+  } else if (value && typeof value === 'object' && 'timestamp' in (value as Record<string, unknown>)) {
+    const t = (value as Record<string, unknown>).timestamp;
+    if (typeof t === 'number') ms = t;
+    else if (typeof t === 'string') { const n = Number(t); if (!Number.isNaN(n)) ms = n; }
   }
-  return null;
+  if (ms == null || ms <= 0 || Number.isNaN(ms)) return null;
+  return formatDateTime(ms);
+}
+
+/** 把单选/多选/公式的值解析为显示文字。
+ * 飞书可能返回：选项 id 字符串（optxxx）、选项对象（{text,id}），或它们的数组。
+ * @param optionMap 选项id → 显示文字 的映射 */
+function resolveOptionText(value: unknown, optionMap: Record<string, string>): string {
+  const toText = (v: unknown): string => {
+    if (typeof v === 'string') return optionMap[v] || v;
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      if (typeof o.text === 'string' && o.text) return o.text;
+      if (typeof o.id === 'string' && o.id) return optionMap[o.id] || o.id;
+    }
+    return v == null ? '—' : String(v);
+  };
+  if (Array.isArray(value)) {
+    const parts = value.map(toText).filter(Boolean);
+    return parts.length ? parts.join(', ') : '—';
+  }
+  return toText(value);
 }
 
 /** 从记录中安全获取字段值 — 兼容 field_id 和字段名称两种 key 格式 */
-function getRecordFieldValue(record: BitableRecord, field: Field): unknown {
+export function getRecordFieldValue(record: BitableRecord, field: Field): unknown {
   if (!record?.fields) return undefined;
   // 优先 field_id（SDK 使用 field_name_type:'field_id'），回退 field name
   if (field.field_id in record.fields) return record.fields[field.field_id];
@@ -137,13 +169,34 @@ function getRecordFieldValue(record: BitableRecord, field: Field): unknown {
   return undefined;
 }
 
-/** 渲染记录的字段值 */
-function renderFieldValue(value: unknown, fieldType: FieldType): string {
+/** 渲染记录的字段值。
+ * @param optionMap 选项 id → 显示文字 的全局映射（由所有单选/多选字段的选项汇总），
+ *                  用于把公式/单选返回的 optxxx 选项 id 还原为可读文字。
+ */
+function renderFieldValue(value: unknown, fieldType: FieldType, optionMap?: Record<string, string>): string {
   if (value === null || value === undefined) return '—';
-  // 日期类字段（飞书返回毫秒时间戳，可能是 number 或 string）
-  if (isDateField(fieldType)) {
+  // 日期/时间类字段（飞书返回毫秒时间戳：number / 字符串 / {timestamp} 对象）
+  if (isDateField(fieldType) || fieldType === 'created_by' || fieldType === 'updated_by') {
     const formatted = tryFormatDate(value);
     if (formatted) return formatted;
+  }
+  // 人员类字段（创建人/修改人 created_by / updated_by）：飞书返回 [{id,name,type}] 数组，展示姓名
+  if ((fieldType === 'created_by' || fieldType === 'updated_by') && Array.isArray(value)) {
+    const names = value
+      .map((v) =>
+        typeof v === 'object' && v !== null
+          ? (v as Record<string, unknown>).name || (v as Record<string, unknown>).id || ''
+          : String(v),
+      )
+      .filter(Boolean);
+    return names.length ? names.join(', ') : '—';
+  }
+  // 公式/单选/多选：值可能是选项 id（optxxx）、选项对象 {text,id}，或它们的数组。统一解析为显示文字
+  if (
+    (fieldType === 'formula' || fieldType === 'single_select' || fieldType === 'multi_select') &&
+    optionMap
+  ) {
+    return resolveOptionText(value, optionMap);
   }
   if (fieldType === 'url' && typeof value === 'object') {
     const u = value as { link?: string; text?: string };
@@ -446,20 +499,44 @@ export default function RecordManager({
   onSwitchToTables,
   onCreateRecord,
   onDeleteRecord,
-  onRefreshRecords,
+  warming = false,
+  loadedCount = 0,
   currentPage,
-  hasMore,
   total,
   pageSize,
   onNextPage,
   onPrevPage,
   onGoToPage,
+  onSort,
+  sortFieldId,
+  sortOrder,
   displayFields,
 }: RecordManagerProps) {
   const [showForm, setShowForm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  // 放大（全屏）模式下按 Esc 退出
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
+
   // 表格展示使用的字段列
   const tableColumns = displayFields ?? fields;
+
+  // 所有单选/多选字段的选项 id → 显示文字 映射，用于把公式/单选返回的 optxxx 还原为可读文字
+  const optionTextById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const f of fields) {
+      for (const o of f.options || []) {
+        if (o.id) map[o.id] = o.text;
+      }
+    }
+    return map;
+  }, [fields]);
 
   if (!_appToken || !_tableId) {
     return <NoTableSelected onSwitchToTables={onSwitchToTables} />;
@@ -470,7 +547,7 @@ export default function RecordManager({
   }
 
   return (
-    <div className="flex flex-col min-h-0 h-full">
+    <div className={`flex flex-col min-h-0 h-full ${expanded ? 'fixed inset-0 z-50 bg-white p-4 md:p-6 shadow-2xl' : ''}`}>
       {/* 头部操作栏 */}
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
@@ -481,17 +558,19 @@ export default function RecordManager({
           </div>
           <div>
             <h2 className="text-lg font-bold text-neutral-800">记录管理</h2>
-            <p className="text-xs text-neutral-400">{total} 条记录</p>
+            <p className="text-xs text-neutral-400">
+              {warming ? (
+                <span className="inline-flex items-center gap-1 text-amber-600">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  正在加载全部记录 {loadedCount}{total > 0 ? ` / ${total}` : ''} 条…
+                </span>
+              ) : (
+                `${total} 条记录`
+              )}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={onRefreshRecords}
-            disabled={isLoading}
-            className="px-4 py-2 text-sm font-medium text-neutral-600 bg-neutral-100 rounded-md hover:bg-neutral-200 transition-colors disabled:opacity-50"
-          >
-            {isLoading ? '加载中...' : '刷新'}
-          </button>
           {!showForm && (
             <button
               onClick={() => setShowForm(true)}
@@ -500,8 +579,36 @@ export default function RecordManager({
               + 新增记录
             </button>
           )}
+
+          {/* 放大 / 关闭表格 */}
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? '关闭' : '放大表格'}
+            className="p-2 text-neutral-500 bg-neutral-100 rounded-md hover:bg-neutral-200 transition-colors"
+          >
+            {expanded ? (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="6" x2="18" y2="18" />
+                <line x1="18" y1="6" x2="6" y2="18" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 3 21 3 21 9" />
+                <polyline points="9 21 3 21 3 15" />
+                <line x1="21" y1="3" x2="14" y2="10" />
+                <line x1="3" y1="21" x2="10" y2="14" />
+              </svg>
+            )}
+          </button>
         </div>
       </div>
+
+      {/* 后台静默预热全量记录时的进度动画 */}
+      {warming && (
+        <div className="progress-track h-1 w-full rounded-full mb-4" role="progressbar" aria-label="正在加载全部记录">
+          <div className="progress-bar" />
+        </div>
+      )}
 
       {/* 新增记录表单 */}
       {showForm && (
@@ -533,22 +640,36 @@ export default function RecordManager({
 
       {/* 表格 —— 滑动条内联在表体内 */}
       {records.length > 0 && (
-        <div className="flex-1 min-h-0 flex flex-col rounded-md border border-neutral-100">
+        <div className="flex-1 min-h-0 flex flex-col rounded-md border border-neutral-100 overflow-auto">
           {/* 表头 */}
-          <div className="flex items-center gap-3 px-4 py-3 bg-neutral-100 text-xs font-semibold text-neutral-400 uppercase tracking-wider min-w-max flex-shrink-0"
+          <div className="flex items-center gap-3 px-4 py-3 bg-neutral-100 text-xs font-semibold text-neutral-400 uppercase tracking-wider min-w-max sticky top-0 z-10 flex-shrink-0"
             style={{ minWidth: `${48 + tableColumns.length * 120 + 80 + (tableColumns.length + 2) * 12}px` }}>
             <span className="w-8 shrink-0 text-left">#</span>
-            {tableColumns.map((f) => (
-              <span key={f.field_id} title={f.field_id} className="w-[120px] shrink-0">
-                {(() => { const Icon = TYPE_ICONS[f.type]; return Icon ? <Icon className="w-3 h-3 inline" /> : '?'; })()} {f.name}
-              </span>
-            ))}
+            {tableColumns.map((f) => {
+              const active = sortFieldId === f.field_id;
+              return (
+                <button
+                  key={f.field_id}
+                  type="button"
+                  onClick={() => onSort(f.field_id)}
+                  title={`按「${f.name}」排序`}
+                  className={`w-[120px] shrink-0 flex items-center gap-1 text-left hover:text-neutral-600 transition-colors ${active ? 'text-neutral-700' : ''}`}
+                >
+                  <span className="inline-flex items-center gap-1 truncate">
+                    {(() => { const Icon = TYPE_ICONS[f.type]; return Icon ? <Icon className="w-3 h-3" /> : <span>?</span>; })()}
+                    <span className="truncate">{f.name}</span>
+                  </span>
+                  <span className="ml-auto text-[10px] leading-none">
+                    {active ? (sortOrder === 'asc' ? '▲' : '▼') : <span className="opacity-30">↕</span>}
+                  </span>
+                </button>
+              );
+            })}
             <span className="w-20 shrink-0 text-right">操作</span>
           </div>
 
-          {/* 表体 —— 自带滚动条 */}
-          <div className="flex-1 min-h-0 overflow-auto">
-            <div className="divide-y divide-neutral-50 min-w-max"
+          {/* 表体 */}
+          <div className="divide-y divide-neutral-50 min-w-max"
               style={{ minWidth: `${48 + tableColumns.length * 120 + 80 + (tableColumns.length + 2) * 12}px` }}>
               {records.map((record, idx) => (
                 <div
@@ -561,7 +682,7 @@ export default function RecordManager({
                   {tableColumns.map((f) => {
                     const val = getRecordFieldValue(record, f);
                     return (
-                    <span key={f.field_id} className="w-[120px] shrink-0 text-sm truncate" title={renderFieldValue(val, f.type)}>
+                    <span key={f.field_id} className="w-[120px] shrink-0 text-sm truncate" title={renderFieldValue(val, f.type, optionTextById)}>
                       {f.type === 'url' ? (
                         <a
                           href={(val as { link?: string })?.link || '#'}
@@ -569,7 +690,7 @@ export default function RecordManager({
                           rel="noopener noreferrer"
                           className="text-amber-600 hover:text-amber-700 underline truncate block"
                         >
-                          {renderFieldValue(val, f.type)}
+                          {renderFieldValue(val, f.type, optionTextById)}
                         </a>
                       ) : f.type === 'file' ? (
                         <AttachmentsCell
@@ -579,7 +700,7 @@ export default function RecordManager({
                           recordId={record.record_id}
                         />
                       ) : (
-                        <span className="text-neutral-700">{renderFieldValue(val, f.type)}</span>
+                        <span className="text-neutral-700">{renderFieldValue(val, f.type, optionTextById)}</span>
                       )}
                     </span>
                     );
@@ -598,7 +719,6 @@ export default function RecordManager({
                 </div>
               ))}
             </div>
-          </div>
         </div>
       )}
 
@@ -676,7 +796,7 @@ export default function RecordManager({
               {/* 下一页 */}
               <button
                 onClick={onNextPage}
-                disabled={!hasMore || isLoading}
+                disabled={currentPage >= totalPages || isLoading}
                 className={`${btnBase} text-neutral-600 bg-neutral-100 hover:bg-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed`}
               >
                 ›

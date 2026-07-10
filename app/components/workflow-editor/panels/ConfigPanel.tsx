@@ -8,10 +8,11 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, ChevronDown, Plus, Trash2, GripVertical } from 'lucide-react';
+import { X, Plus, Trash2, RefreshCw } from 'lucide-react';
 import { useWorkflowEditorStore, type AppNode, NODE_TYPES } from '@/lib/workflow-engine/editor-store';
 import type { Field, FilterCondition, FieldMapping, CrdAction } from '@/types';
-import { CRUD_ACTION_META, FIELD_TYPE_OPTIONS } from '@/types';
+import { CRUD_ACTION_META } from '@/types';
+import { CustomSelect } from '@/app/components/CustomSelect';
 
 interface ConfigPanelProps {
   onListTables?: (appToken: string) => Promise<{ table_id: string; name: string }[]>;
@@ -67,86 +68,64 @@ function buildCron(freq: ScheduleFreq, time: string, weekday: number, monthDay: 
   }
 }
 
-/** 统一的主选择器样式：等宽（w-full + min-w-0）+ 文字溢出省略号（truncate）
- *  min-w-0 关键：原生 <select> 默认 min-width 由最长 option 文本决定，
- *  长名称（如多维表格名）会撑宽下拉框导致不等宽，min-w-0 让其收缩到父容器宽度。 */
-const SELECT_CLS =
-  'w-full min-w-0 truncate rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300';
-
-// ====== 自定义下拉选择器（替代原生 <select>，确保框+展开列表均等宽+省略号） ======
-
-interface SelectOption {
-  id: string;
-  name: string;
+/** 由频率 + 日期时间（datetime-local 值）生成 Cron 表达式 */
+function cronFromParts(f: ScheduleFreq, min: number, hour: number, monthDay: number, weekday: number): string {
+  switch (f) {
+    case 'minute': return '* * * * *';
+    case 'hourly': return `${min} * * * *`;
+    case 'daily': return `${min} ${hour} * * *`;
+    case 'weekly': return `${min} ${hour} * * ${weekday}`;
+    case 'monthly': return `${min} ${hour} ${monthDay} * *`;
+    case 'custom': return '';
+  }
 }
 
-function CustomSelect({
-  value,
-  onChange,
-  options = [],
-  placeholder = '请选择',
-  disabled = false,
-  loading = false,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  options?: SelectOption[];
-  placeholder?: string;
-  disabled?: boolean;
-  loading?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectedLabel = options.find((o) => o.id === value)?.name || '';
+/** 由频率 + 解析出的时间 / 星期 / 日期构造 datetime-local 初始值（取今天附近） */
+function buildExecDateTime(f: ScheduleFreq, time: string, weekday: number, monthDay: number): string {
+  const now = new Date();
+  const [h, m] = (time || '09:00').split(':');
+  let y = now.getFullYear(), mo = now.getMonth(), dnum = now.getDate();
+  if (f === 'monthly') dnum = monthDay;
+  else if (f === 'weekly') {
+    const diff = ((weekday - now.getDay()) + 7) % 7 || 7;
+    const t = new Date(now);
+    t.setDate(now.getDate() + diff);
+    y = t.getFullYear(); mo = t.getMonth(); dnum = t.getDate();
+  }
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  return `${y}-${p2(mo + 1)}-${p2(dnum)}T${p2(Number(h))}:${p2(Number(m))}`;
+}
 
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => !disabled && setOpen(!open)}
-        disabled={disabled}
-        className={`${SELECT_CLS} text-left flex items-center justify-between gap-1`}
-      >
-        <span className="truncate flex-1 text-left">{selectedLabel || placeholder}</span>
-        {loading ? (
-          <svg className="w-3 h-3 animate-spin text-neutral-400 shrink-0" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-        ) : (
-          <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
-        )}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 w-full max-h-48 overflow-y-auto bg-white rounded-lg border border-neutral-200 shadow-xl z-20 py-1 animate-scale-in origin-top">
-            {options.length === 0 && !loading && (
-              <div className="text-xs text-neutral-400 px-3 py-2">{placeholder === '请选择' ? '暂无数据' : placeholder}</div>
-            )}
-            {options.map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => { onChange(opt.id); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 text-xs transition-colors ${
-                  opt.id === value
-                    ? 'bg-blue-50 text-blue-700 font-medium'
-                    : 'text-neutral-600 hover:bg-neutral-50'
-                }`}
-              >
-                <span className="truncate block">{opt.name}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
+/** 安全解析 datetime-local 值，非法时回退到当前时间 */
+function resolveDate(dt: string): Date {
+  const d = new Date(dt);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+
+/**
+ * 节点配置自动保存钩子：
+ * 任一配置项变更即写入节点数据（updateNodeData 会合并进 node.data），
+ * 因此无需手动点击「保存」按钮，配置栏的选择会即时生效并随工作流一起持久化。
+ *
+ * @param nodeId   节点 id
+ * @param build    根据当前局部状态构建要写入 node.data 的对象
+ * @param deps     触发自动保存的依赖（即 build 中用到的全部状态）
+ */
+function useNodeAutoSave(
+  nodeId: string,
+  build: () => Record<string, unknown>,
+  deps: React.DependencyList,
+): void {
+  const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
+  useEffect(() => {
+    updateNodeData(nodeId, build());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, updateNodeData, ...deps]);
 }
 
 // ====== 配置组件类型 ======
 
-type ConfigComponent = React.FC<{ node: AppNode; onClose: () => void } & ConfigPanelProps>;
+type ConfigComponent = React.FC<{ node: AppNode } & ConfigPanelProps>;
 
 // ====== 配置面板注册中心 ======
 
@@ -166,7 +145,7 @@ export const configPanelRegistry = new ConfigPanelRegistry();
 
 // ====== 子面板 ======
 
-function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose: () => void } & ConfigPanelProps) {
+function TriggerConfig({ node, onListTables }: { node: AppNode } & ConfigPanelProps) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const apps = useWorkflowEditorStore((s) => s.apps);
   const data = node.data as Record<string, unknown>;
@@ -176,9 +155,7 @@ function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose
   const [webhookBodyTemplate, setWebhookBodyTemplate] = useState((data.webhookBodyTemplate as string) || '');
   const [cronExpression, setCronExpression] = useState((data.cronExpression as string) || '');
   const [freq, setFreq] = useState<ScheduleFreq>('daily');
-  const [scheduleTime, setScheduleTime] = useState('09:00');
-  const [weekday, setWeekday] = useState(1);
-  const [monthDay, setMonthDay] = useState(1);
+  const [execDateTime, setExecDateTime] = useState('');
   const [eventAppToken, setEventAppToken] = useState((data.eventAppToken as string) || '');
   const [eventTableId, setEventTableId] = useState((data.eventTableId as string) || '');
   const [eventType, setEventType] = useState<'record_created' | 'record_updated' | 'record_deleted'>(
@@ -201,45 +178,52 @@ function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose
 
   // 根据已保存的 cronExpression 初始化友好的频率配置
   useEffect(() => {
+    if (!cronExpression) {
+      setExecDateTime(buildExecDateTime('daily', '09:00', 1, 1));
+      return;
+    }
     const p = parseCron(cronExpression);
     setFreq(p.freq);
-    setScheduleTime(p.time);
-    setWeekday(p.weekday);
-    setMonthDay(p.monthDay);
-    if (p.freq !== 'custom') setCronExpression(buildCron(p.freq, p.time, p.weekday, p.monthDay));
+    if (p.freq !== 'custom') {
+      setExecDateTime(buildExecDateTime(p.freq, p.time, p.weekday, p.monthDay));
+      setCronExpression(buildCron(p.freq, p.time, p.weekday, p.monthDay));
+    } else {
+      setExecDateTime(buildExecDateTime('daily', '09:00', 1, 1));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const updateSchedule = (
-    f: ScheduleFreq = freq,
-    t: string = scheduleTime,
-    w: number = weekday,
-    d: number = monthDay,
-  ) => {
-    if (f !== 'custom') setCronExpression(buildCron(f, t, w, d));
+  /** 由当前频率 + 日期时间重算 Cron 表达式 */
+  const updateSchedule = (f: ScheduleFreq, dt: string) => {
+    if (f !== 'custom') {
+      const d = resolveDate(dt);
+      setCronExpression(cronFromParts(f, d.getMinutes(), d.getHours(), d.getDate(), d.getDay()));
+    }
   };
 
-  const handleSave = () => {
-    updateNodeData(node.id, {
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({
       triggerKind, webhookUrl, secretToken, webhookBodyTemplate,
       cronExpression, eventAppToken, eventTableId, eventType,
-    });
-    onClose();
-  };
+    }),
+    [triggerKind, webhookUrl, secretToken, webhookBodyTemplate, cronExpression, eventAppToken, eventTableId, eventType],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">触发器类型</label>
-        <select
+        <CustomSelect
           value={triggerKind}
-          onChange={(e) => setTriggerKind(e.target.value)}
-          className={SELECT_CLS}
-        >
-          <option value="webhook">Webhook</option>
-          <option value="scheduled">定时触发</option>
-          <option value="bitable_event">多维表格事件</option>
-        </select>
+          onChange={(v) => setTriggerKind(v)}
+          options={[
+            { id: 'webhook', name: 'Webhook' },
+            { id: 'scheduled', name: '定时触发' },
+            { id: 'bitable_event', name: '多维表格事件' },
+          ]}
+        />
       </div>
       {triggerKind === 'webhook' && (
         <>
@@ -248,19 +232,59 @@ function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose
             <input
               type="text" value={resolveWebhookUrl(webhookUrl)}
               onChange={(e) => setWebhookUrl(e.target.value)}
-              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-neutral-50"
+              onClick={() => {
+                const url = resolveWebhookUrl(webhookUrl);
+                navigator.clipboard.writeText(url).then(() => {
+                  window.dispatchEvent(
+                    new CustomEvent('app:toast', {
+                      detail: { type: 'success', text: 'Webhook URL 已复制到剪贴板' },
+                    }),
+                  );
+                });
+              }}
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-neutral-50 cursor-pointer hover:border-blue-300 focus:outline-none dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
               readOnly
+              title="点击复制 URL"
             />
-            <p className="text-[10px] text-neutral-400 mt-1">外部系统 POST 到此地址触发工作流</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-neutral-700 mb-1">安全 Token（可选）</label>
-            <input
-              type="text" value={secretToken}
-              onChange={(e) => setSecretToken(e.target.value)}
-              placeholder="可选，用于验证请求来源"
-              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-            />
+            <div className="relative">
+              <input
+                type="text" value={secretToken}
+                onChange={(e) => setSecretToken(e.target.value)}
+                onClick={() => {
+                  if (!secretToken) return;
+                  navigator.clipboard.writeText(secretToken).then(() => {
+                    window.dispatchEvent(
+                      new CustomEvent('app:toast', {
+                        detail: { type: 'success', text: '安全 Token 已复制到剪贴板' },
+                      }),
+                    );
+                  });
+                }}
+                placeholder="可选，用于验证请求来源"
+                className="w-full rounded-lg border border-neutral-200 pl-3 pr-16 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 cursor-pointer dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
+                title="点击复制 Token"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const token = Array.from({ length: 32 }, () =>
+                    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 62)]
+                  ).join('');
+                  setSecretToken(token);
+                }}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1 rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 transition-colors dark:text-neutral-300 dark:hover:bg-neutral-700"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> 生成
+              </button>
+            </div>
+            <p className="text-[10px] text-neutral-400 mt-1">
+              {secretToken
+                ? <>请求头需携带 <code className="font-mono">X-Webhook-Token: &lt;token&gt;</code> 才能通过校验</>
+                : '不填写则任何请求均可触发，建议生成 Token 以提升安全性'}
+            </p>
           </div>
           <div>
             <label className="block text-xs font-medium text-neutral-700 mb-1">请求体模板（可选）</label>
@@ -276,89 +300,56 @@ function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose
       )}
       {triggerKind === 'scheduled' && (
         <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-neutral-700 mb-1">执行频率</label>
-            <select
-              value={freq}
-              onChange={(e) => { const f = e.target.value as ScheduleFreq; setFreq(f); updateSchedule(f); }}
-              className={SELECT_CLS}
-            >
-              <option value="minute">每分钟</option>
-              <option value="hourly">每小时</option>
-              <option value="daily">每天</option>
-              <option value="weekly">每周</option>
-              <option value="monthly">每月</option>
-              <option value="custom">自定义（高级 Cron）</option>
-            </select>
-          </div>
-
-          {freq === 'hourly' && (
+          {freq !== 'custom' && (
             <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">第几分钟触发</label>
+              <label className="block text-xs font-medium text-neutral-700 mb-1 dark:text-neutral-300">执行时间</label>
               <input
-                type="number" min={0} max={59}
-                value={Number(scheduleTime.split(':')[1])}
+                type="datetime-local"
+                value={execDateTime}
                 onChange={(e) => {
-                  const t = `00:${String(e.target.value || '0').padStart(2, '0')}`;
-                  setScheduleTime(t);
-                  updateSchedule(freq, t);
+                  const dt = e.target.value;
+                  setExecDateTime(dt);
+                  updateSchedule(freq, dt);
                 }}
-                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
               />
-              <p className="text-[10px] text-neutral-400 mt-1">每小时的第 {Number(scheduleTime.split(':')[1])} 分钟执行</p>
+              <p className="text-[10px] text-neutral-400 mt-1">
+                {freq === 'minute'
+                  ? '每分钟执行，时间无需设置'
+                  : '日期用于确定星期 / 每月几号，时间用于确定每日执行时刻'}
+              </p>
             </div>
           )}
 
-          {(freq === 'daily' || freq === 'weekly' || freq === 'monthly') && (
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">执行时间</label>
-              <input
-                type="time" value={scheduleTime}
-                onChange={(e) => { const t = e.target.value; setScheduleTime(t); updateSchedule(freq, t); }}
-                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-              />
-            </div>
-          )}
-
-          {freq === 'weekly' && (
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">星期</label>
-              <select
-                value={weekday}
-                onChange={(e) => { const w = Number(e.target.value); setWeekday(w); updateSchedule(freq, scheduleTime, w); }}
-                className={SELECT_CLS}
-              >
-                {['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((d, i) => (
-                  <option key={i} value={i}>{d}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {freq === 'monthly' && (
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">每月几号</label>
-              <select
-                value={monthDay}
-                onChange={(e) => { const d = Number(e.target.value); setMonthDay(d); updateSchedule(freq, scheduleTime, weekday, d); }}
-                className={SELECT_CLS}
-              >
-                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                  <option key={d} value={d}>{d} 号</option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div>
+            <label className="block text-xs font-medium text-neutral-700 mb-1 dark:text-neutral-300">执行频率</label>
+            <CustomSelect
+              value={freq}
+              onChange={(v) => {
+                const f = v as ScheduleFreq;
+                setFreq(f);
+                updateSchedule(f, execDateTime);
+              }}
+              options={[
+                { id: 'minute', name: '每分钟' },
+                { id: 'hourly', name: '每小时' },
+                { id: 'daily', name: '每天' },
+                { id: 'weekly', name: '每周' },
+                { id: 'monthly', name: '每月' },
+                { id: 'custom', name: '自定义（高级 Cron）' },
+              ]}
+            />
+          </div>
 
           {freq === 'custom' && (
             <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">Cron 表达式</label>
+              <label className="block text-xs font-medium text-neutral-700 mb-1 dark:text-neutral-300">Cron 表达式</label>
               <input
                 type="text"
                 value={cronExpression}
                 onChange={(e) => setCronExpression(e.target.value)}
                 placeholder="0 9 * * *"
-                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
               />
             </div>
           )}
@@ -395,28 +386,24 @@ function TriggerConfig({ node, onClose, onListTables }: { node: AppNode; onClose
           )}
           <div>
             <label className="block text-xs font-medium text-neutral-700 mb-1">监听的事件类型</label>
-            <select
+            <CustomSelect
               value={eventType}
-              onChange={(e) => setEventType(e.target.value as 'record_created' | 'record_updated' | 'record_deleted')}
-              className={SELECT_CLS}
-            >
-              <option value="record_created">记录创建</option>
-              <option value="record_updated">记录更新</option>
-              <option value="record_deleted">记录删除</option>
-            </select>
+              onChange={(v) => setEventType(v as 'record_created' | 'record_updated' | 'record_deleted')}
+              options={[
+                { id: 'record_created', name: '记录创建' },
+                { id: 'record_updated', name: '记录更新' },
+                { id: 'record_deleted', name: '记录删除' },
+              ]}
+            />
           </div>
           <p className="text-[10px] text-neutral-400">需在飞书开放平台配置多维表格事件回调，将事件推送到本工作流 Webhook 后生效</p>
         </div>
       )}
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function ActionConfig({ node, onClose, onListTables, onListFields }: { node: AppNode; onClose: () => void } & ConfigPanelProps) {
+function ActionConfig({ node, onListTables, onListFields }: { node: AppNode } & ConfigPanelProps) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const apps = useWorkflowEditorStore((s) => s.apps);
   const data = node.data as Record<string, unknown>;
@@ -491,14 +478,16 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
 
   const targetTableName = tables.find((t) => t.table_id === targetTableId)?.name || '';
 
-  const handleSave = () => {
-    updateNodeData(node.id, {
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({
       label: CRUD_ACTION_META[actionType]?.label || '操作',
       actionType, targetAppToken, targetTableId, targetTableName,
       fieldMappings, filters,
-    });
-    onClose();
-  };
+    }),
+    [actionType, targetAppToken, targetTableId, targetTableName, fieldMappings, filters],
+  );
 
   return (
     <div className="space-y-4">
@@ -571,19 +560,21 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
                   </div>
                   {/* 第二行：映射类型 + 映射内容（同一方框内） */}
                   <div className="flex items-center gap-2 border border-neutral-200 rounded-lg p-2 bg-white">
-                    <select
+                    <div className="w-[88px] shrink-0">
+                    <CustomSelect
                       value={m.source}
-                      onChange={(e) => {
+                      onChange={(v) => {
                         const newMaps = [...fieldMappings];
-                        newMaps[idx] = { ...newMaps[idx], source: e.target.value as 'manual' | 'webhook' | 'variable' };
+                        newMaps[idx] = { ...newMaps[idx], source: v as 'manual' | 'webhook' | 'variable' };
                         setFieldMappings(newMaps);
                       }}
-                      className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white shrink-0"
-                    >
-                      <option value="manual">手动输入</option>
-                      <option value="webhook">Webhook 参数</option>
-                      <option value="variable">变量</option>
-                    </select>
+                      options={[
+                        { id: 'manual', name: '手动输入' },
+                        { id: 'webhook', name: 'Webhook 参数' },
+                        { id: 'variable', name: '变量' },
+                      ]}
+                    />
+                    </div>
                     <div className="flex-1 min-w-0">
                       {m.source === 'manual' && (
                         <input
@@ -655,23 +646,25 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
               {filters.map((f, idx) => (
                 <div key={f.fieldId} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-50 border border-neutral-100">
                   <span className="text-xs font-medium text-neutral-600 min-w-[60px]">{f.fieldName}</span>
-                  <select
+                  <div className="w-[72px] shrink-0">
+                  <CustomSelect
                     value={f.operator}
-                    onChange={(e) => {
+                    onChange={(v) => {
                       const newFilters = [...filters];
-                      newFilters[idx] = { ...newFilters[idx], operator: e.target.value as FilterCondition['operator'] };
+                      newFilters[idx] = { ...newFilters[idx], operator: v as FilterCondition['operator'] };
                       setFilters(newFilters);
                     }}
-                    className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
-                  >
-                    <option value="eq">=</option>
-                    <option value="ne">≠</option>
-                    <option value="contains">包含</option>
-                    <option value="gt">&gt;</option>
-                    <option value="lt">&lt;</option>
-                    <option value="gte">≥</option>
-                    <option value="lte">≤</option>
-                  </select>
+                    options={[
+                      { id: 'eq', name: '=' },
+                      { id: 'ne', name: '≠' },
+                      { id: 'contains', name: '包含' },
+                      { id: 'gt', name: '>' },
+                      { id: 'lt', name: '<' },
+                      { id: 'gte', name: '≥' },
+                      { id: 'lte', name: '≤' },
+                    ]}
+                  />
+                  </div>
                   <input
                     type="text" value={f.value}
                     onChange={(e) => {
@@ -695,15 +688,11 @@ function ActionConfig({ node, onClose, onListTables, onListFields }: { node: App
         </div>
       )}
 
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function FilterConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function FilterConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [conditions, setConditions] = useState<FilterCondition[]>(
@@ -718,10 +707,12 @@ function FilterConfig({ node, onClose }: { node: AppNode; onClose: () => void })
     ]);
   };
 
-  const handleSave = () => {
-    updateNodeData(node.id, { conditions, matchMode });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ conditions, matchMode }),
+    [conditions, matchMode],
+  );
 
   return (
     <div className="space-y-4">
@@ -753,23 +744,25 @@ function FilterConfig({ node, onClose }: { node: AppNode; onClose: () => void })
               placeholder="字段名"
               className="flex-1 text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
             />
-            <select
+            <div className="w-[72px] shrink-0">
+            <CustomSelect
               value={c.operator}
-              onChange={(e) => {
+              onChange={(v) => {
                 const newConds = [...conditions];
-                newConds[idx] = { ...newConds[idx], operator: e.target.value as FilterCondition['operator'] };
+                newConds[idx] = { ...newConds[idx], operator: v as FilterCondition['operator'] };
                 setConditions(newConds);
               }}
-              className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white"
-            >
-              <option value="eq">=</option>
-              <option value="ne">≠</option>
-              <option value="contains">包含</option>
-              <option value="gt">&gt;</option>
-              <option value="lt">&lt;</option>
-              <option value="gte">≥</option>
-              <option value="lte">≤</option>
-            </select>
+              options={[
+                { id: 'eq', name: '=' },
+                { id: 'ne', name: '≠' },
+                { id: 'contains', name: '包含' },
+                { id: 'gt', name: '>' },
+                { id: 'lt', name: '<' },
+                { id: 'gte', name: '≥' },
+                { id: 'lte', name: '≤' },
+              ]}
+            />
+            </div>
             <input
               type="text" value={c.value}
               onChange={(e) => {
@@ -791,24 +784,22 @@ function FilterConfig({ node, onClose }: { node: AppNode; onClose: () => void })
         <Plus className="w-3 h-3" /> 添加条件
       </button>
 
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function DelayConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function DelayConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [duration, setDuration] = useState((data.duration as number) || 1);
   const [unit, setUnit] = useState((data.unit as string) || 'minutes');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { duration, unit });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ duration, unit }),
+    [duration, unit],
+  );
 
   return (
     <div className="space-y-4">
@@ -818,27 +809,25 @@ function DelayConfig({ node, onClose }: { node: AppNode; onClose: () => void }) 
           onChange={(e) => setDuration(Math.max(1, Number(e.target.value)))}
           className="w-24 rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
         />
-        <select
+        <div className="w-20 shrink-0">
+        <CustomSelect
           value={unit}
-          onChange={(e) => setUnit(e.target.value)}
-          className="rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-        >
-          <option value="seconds">秒</option>
-          <option value="minutes">分钟</option>
-          <option value="hours">小时</option>
-          <option value="days">天</option>
-        </select>
+          onChange={(v) => setUnit(v)}
+          options={[
+            { id: 'seconds', name: '秒' },
+            { id: 'minutes', name: '分钟' },
+            { id: 'hours', name: '小时' },
+            { id: 'days', name: '天' },
+          ]}
+        />
+        </div>
       </div>
       <p className="text-[10px] text-neutral-400">注意：最大延时 5 分钟（serverless 限制）</p>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function HttpConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function HttpConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [url, setUrl] = useState((data.url as string) || '');
@@ -850,23 +839,23 @@ function HttpConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
 
   const addHeader = () => setHeaders([...headers, { key: '', value: '' }]);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { url, method, headers, body });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ url, method, headers, body }),
+    [url, method, headers, body],
+  );
 
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
-        <select
+        <div className="w-24 shrink-0">
+        <CustomSelect
           value={method}
-          onChange={(e) => setMethod(e.target.value)}
-          className="rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
-        >
-          {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
+          onChange={(v) => setMethod(v)}
+          options={['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((m) => ({ id: m, name: m }))}
+        />
+        </div>
         <input
           type="text" value={url}
           onChange={(e) => setUrl(e.target.value)}
@@ -923,15 +912,11 @@ function HttpConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
         </div>
       )}
 
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function ImConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function ImConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [msgType, setMsgType] = useState<'text' | 'card'>((data.msgType as 'text' | 'card') || 'text');
@@ -940,28 +925,30 @@ function ImConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
   const [receiveIdType, setReceiveIdType] = useState((data.receiveIdType as string) || 'open_id');
   const [receiveId, setReceiveId] = useState((data.receiveId as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, {
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({
       msgType, textContent, cardJson, receiveIdType, receiveId,
-    });
-    onClose();
-  };
+    }),
+    [msgType, textContent, cardJson, receiveIdType, receiveId],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">接收人类型</label>
-        <select
+        <CustomSelect
           value={receiveIdType}
-          onChange={(e) => setReceiveIdType(e.target.value)}
-          className={SELECT_CLS}
-        >
-          <option value="open_id">Open ID</option>
-          <option value="user_id">User ID</option>
-          <option value="union_id">Union ID</option>
-          <option value="email">邮箱</option>
-          <option value="chat_id">群聊 ID</option>
-        </select>
+          onChange={(v) => setReceiveIdType(v)}
+          options={[
+            { id: 'open_id', name: 'Open ID' },
+            { id: 'user_id', name: 'User ID' },
+            { id: 'union_id', name: 'Union ID' },
+            { id: 'email', name: '邮箱' },
+            { id: 'chat_id', name: '群聊 ID' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">接收人 ID</label>
@@ -1013,17 +1000,13 @@ function ImConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
         </div>
       )}
 
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
 // ====== 流程控制配置面板 ======
 
-function SwitchConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function SwitchConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [branches, setBranches] = useState<{ id: string; label: string; fieldName: string; operator: string; value: string; valueSource: string }[]>(
@@ -1043,10 +1026,12 @@ function SwitchConfig({ node, onClose }: { node: AppNode; onClose: () => void })
 
   const addBranch = () => setBranches([...branches, { id: idGen(), label: `分支${branches.length + 1}`, fieldName: '', operator: 'eq', value: '', valueSource: 'manual' }]);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { branches, hasDefault });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ branches, hasDefault }),
+    [branches, hasDefault],
+  );
 
   return (
     <div className="space-y-4">
@@ -1070,24 +1055,20 @@ function SwitchConfig({ node, onClose }: { node: AppNode; onClose: () => void })
               </div>
               <div className="flex gap-2 items-center">
                 <input type="text" value={b.fieldName} onChange={(e) => { const n = [...branches]; n[idx] = { ...n[idx], fieldName: e.target.value }; setBranches(n); }} placeholder="字段名" className="w-24 text-xs rounded border border-neutral-200 px-2 py-1 bg-white" />
-                <select value={b.operator} onChange={(e) => { const n = [...branches]; n[idx] = { ...n[idx], operator: e.target.value }; setBranches(n); }} className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white">
-                  <option value="eq">=</option><option value="ne">≠</option><option value="contains">包含</option><option value="gt">&gt;</option><option value="lt">&lt;</option>
-                </select>
+                <div className="w-[72px] shrink-0">
+                <CustomSelect value={b.operator} onChange={(v) => { const n = [...branches]; n[idx] = { ...n[idx], operator: v }; setBranches(n); }} options={[{ id: 'eq', name: '=' }, { id: 'ne', name: '≠' }, { id: 'contains', name: '包含' }, { id: 'gt', name: '>' }, { id: 'lt', name: '<' }]} />
+                </div>
                 <input type="text" value={b.value} onChange={(e) => { const n = [...branches]; n[idx] = { ...n[idx], value: e.target.value }; setBranches(n); }} placeholder="值" className="flex-1 text-xs rounded border border-neutral-200 px-2 py-1 bg-white" />
               </div>
             </div>
           ))}
         </div>
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function LoopConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function LoopConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [mode, setMode] = useState((data.mode as string) || 'fixed_count');
@@ -1095,19 +1076,25 @@ function LoopConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
   const [iterateSource, setIterateSource] = useState((data.iterateSource as string) || '');
   const [maxIterations, setMaxIterations] = useState((data.maxIterations as number) || 100);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { mode, count, iterateSource, maxIterations });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ mode, count, iterateSource, maxIterations }),
+    [mode, count, iterateSource, maxIterations],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">循环模式</label>
-        <select value={mode} onChange={(e) => setMode(e.target.value)} className={SELECT_CLS}>
-          <option value="fixed_count">固定次数</option>
-          <option value="iterate_array">迭代数组</option>
-        </select>
+        <CustomSelect
+          value={mode}
+          onChange={(v) => setMode(v)}
+          options={[
+            { id: 'fixed_count', name: '固定次数' },
+            { id: 'iterate_array', name: '迭代数组' },
+          ]}
+        />
       </div>
       {mode === 'fixed_count' && (
         <div>
@@ -1125,34 +1112,36 @@ function LoopConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
         <label className="block text-xs font-medium text-neutral-700 mb-1">最大迭代次数（安全上限）</label>
         <input type="number" min={1} max={1000} value={maxIterations} onChange={(e) => setMaxIterations(Number(e.target.value))} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function MergeConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function MergeConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [mode, setMode] = useState((data.mode as string) || 'append');
   const [joinKey, setJoinKey] = useState((data.joinKey as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { mode, joinKey });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ mode, joinKey }),
+    [mode, joinKey],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">合并模式</label>
-        <select value={mode} onChange={(e) => setMode(e.target.value)} className={SELECT_CLS}>
-          <option value="append">追加（数组）</option>
-          <option value="combine">对象合并</option>
-          <option value="join">Key 关联</option>
-        </select>
+        <CustomSelect
+          value={mode}
+          onChange={(v) => setMode(v)}
+          options={[
+            { id: 'append', name: '追加（数组）' },
+            { id: 'combine', name: '对象合并' },
+            { id: 'join', name: 'Key 关联' },
+          ]}
+        />
       </div>
       {mode === 'join' && (
         <div>
@@ -1160,25 +1149,23 @@ function MergeConfig({ node, onClose }: { node: AppNode; onClose: () => void }) 
           <input type="text" value={joinKey} onChange={(e) => setJoinKey(e.target.value)} placeholder="例如: record_id" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
         </div>
       )}
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function TryCatchConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function TryCatchConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [continueOnError, setContinueOnError] = useState<boolean>((data.continueOnError as boolean) ?? true);
   const [maxRetries, setMaxRetries] = useState((data.maxRetries as number) || 3);
   const [retryDelayMs, setRetryDelayMs] = useState((data.retryDelayMs as number) || 1000);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { continueOnError, maxRetries, retryDelayMs });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ continueOnError, maxRetries, retryDelayMs }),
+    [continueOnError, maxRetries, retryDelayMs],
+  );
 
   return (
     <div className="space-y-4">
@@ -1196,17 +1183,13 @@ function TryCatchConfig({ node, onClose }: { node: AppNode; onClose: () => void 
         <label className="block text-xs font-medium text-neutral-700 mb-1">重试间隔 (ms)</label>
         <input type="number" min={100} step={100} value={retryDelayMs} onChange={(e) => setRetryDelayMs(Number(e.target.value))} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
 // ====== 数据转换配置面板 ======
 
-function AssignConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function AssignConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [variables, setVariables] = useState<{ name: string; value: string; source: string; webhookKey?: string }[]>(
@@ -1215,10 +1198,12 @@ function AssignConfig({ node, onClose }: { node: AppNode; onClose: () => void })
 
   const addVar = () => setVariables([...variables, { name: '', value: '', source: 'manual' }]);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { variables });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ variables }),
+    [variables],
+  );
 
   return (
     <div className="space-y-4">
@@ -1231,11 +1216,9 @@ function AssignConfig({ node, onClose }: { node: AppNode; onClose: () => void })
           {variables.map((v, idx) => (
             <div key={idx} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-50 border border-neutral-100">
               <input type="text" value={v.name} onChange={(e) => { const n = [...variables]; n[idx] = { ...n[idx], name: e.target.value }; setVariables(n); }} placeholder="变量名" className="w-24 text-xs rounded border border-neutral-200 px-2 py-1 bg-white" />
-              <select value={v.source} onChange={(e) => { const n = [...variables]; n[idx] = { ...n[idx], source: e.target.value }; setVariables(n); }} className="text-xs rounded border border-neutral-200 px-2 py-1 bg-white">
-                <option value="manual">手动</option>
-                <option value="webhook">Webhook</option>
-                <option value="expression">表达式</option>
-              </select>
+              <div className="w-[88px] shrink-0">
+              <CustomSelect value={v.source} onChange={(v2) => { const n = [...variables]; n[idx] = { ...n[idx], source: v2 }; setVariables(n); }} options={[{ id: 'manual', name: '手动' }, { id: 'webhook', name: 'Webhook' }, { id: 'expression', name: '表达式' }]} />
+              </div>
               {v.source !== 'webhook' ? (
                 <input type="text" value={v.value} onChange={(e) => { const n = [...variables]; n[idx] = { ...n[idx], value: e.target.value }; setVariables(n); }} placeholder="值" className="flex-1 text-xs rounded border border-neutral-200 px-2 py-1 bg-white" />
               ) : (
@@ -1246,33 +1229,40 @@ function AssignConfig({ node, onClose }: { node: AppNode; onClose: () => void })
           ))}
         </div>
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function AggregateConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function AggregateConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [operation, setOperation] = useState((data.operation as string) || 'count');
   const [fieldName, setFieldName] = useState((data.fieldName as string) || '');
   const [resultVariable, setResultVariable] = useState((data.resultVariable as string) || 'aggregate_result');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { operation, fieldName, resultVariable });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ operation, fieldName, resultVariable }),
+    [operation, fieldName, resultVariable],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">聚合操作</label>
-        <select value={operation} onChange={(e) => setOperation(e.target.value)} className={SELECT_CLS}>
-          <option value="count">计数</option><option value="sum">求和</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option><option value="group_by">分组</option>
-        </select>
+        <CustomSelect
+          value={operation}
+          onChange={(val) => setOperation(val)}
+          options={[
+            { id: 'count', name: '计数' },
+            { id: 'sum', name: '求和' },
+            { id: 'avg', name: '平均值' },
+            { id: 'min', name: '最小值' },
+            { id: 'max', name: '最大值' },
+            { id: 'group_by', name: '分组' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">目标字段</label>
@@ -1282,34 +1272,36 @@ function AggregateConfig({ node, onClose }: { node: AppNode; onClose: () => void
         <label className="block text-xs font-medium text-neutral-700 mb-1">结果变量名</label>
         <input type="text" value={resultVariable} onChange={(e) => setResultVariable(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function CodeConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function CodeConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [code, setCode] = useState((data.code as string) || '// 可访问 data (上游输出) 和 ctx\n// 将结果赋值给 exports.result\nconst result = data;\nexports.result = result;');
   const [language, setLanguage] = useState((data.language as string) || 'javascript');
   const [timeout, setTimeout_] = useState((data.timeout as number) || 5000);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { code, language, timeout });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ code, language, timeout }),
+    [code, language, timeout],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">语言</label>
-        <select value={language} onChange={(e) => setLanguage(e.target.value)} className={SELECT_CLS}>
-          <option value="javascript">JavaScript</option>
-          <option value="python">Python（需要运行时）</option>
-        </select>
+        <CustomSelect
+          value={language}
+          onChange={(val) => setLanguage(val)}
+          options={[
+            { id: 'javascript', name: 'JavaScript' },
+            { id: 'python', name: 'Python（需要运行时）' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">代码</label>
@@ -1319,35 +1311,37 @@ function CodeConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
         <label className="block text-xs font-medium text-neutral-700 mb-1">超时 (ms)</label>
         <input type="number" min={1000} max={30000} value={timeout} onChange={(e) => setTimeout_(Number(e.target.value))} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function TemplateConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function TemplateConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [template, setTemplate] = useState((data.template as string) || '你好 {{name}}，你的订单 {{order_id}} 已处理完成。');
   const [engine, setEngine] = useState((data.engine as string) || 'plain');
   const [resultVariable, setResultVariable] = useState((data.resultVariable as string) || 'rendered');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { template, engine, resultVariable });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ template, engine, resultVariable }),
+    [template, engine, resultVariable],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">模板引擎</label>
-        <select value={engine} onChange={(e) => setEngine(e.target.value)} className={SELECT_CLS}>
-          <option value="plain">纯文本 {'{{var}}'}</option>
-          <option value="handlebars">Handlebars</option>
-          <option value="mustache">Mustache</option>
-        </select>
+        <CustomSelect
+          value={engine}
+          onChange={(val) => setEngine(val)}
+          options={[
+            { id: 'plain', name: '纯文本 {{var}}' },
+            { id: 'handlebars', name: 'Handlebars' },
+            { id: 'mustache', name: 'Mustache' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">模板内容</label>
@@ -1358,17 +1352,13 @@ function TemplateConfig({ node, onClose }: { node: AppNode; onClose: () => void 
         <label className="block text-xs font-medium text-neutral-700 mb-1">结果变量名</label>
         <input type="text" value={resultVariable} onChange={(e) => setResultVariable(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
 // ====== 通知配置面板 ======
 
-function EmailConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function EmailConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [to, setTo] = useState((data.to as string) || '');
@@ -1377,10 +1367,12 @@ function EmailConfig({ node, onClose }: { node: AppNode; onClose: () => void }) 
   const [body, setBody] = useState((data.body as string) || '');
   const [bodyFormat, setBodyFormat] = useState((data.bodyFormat as string) || 'text');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { to, toSource, subject, body, bodyFormat });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ to, toSource, subject, body, bodyFormat }),
+    [to, toSource, subject, body, bodyFormat],
+  );
 
   return (
     <div className="space-y-4">
@@ -1407,15 +1399,11 @@ function EmailConfig({ node, onClose }: { node: AppNode; onClose: () => void }) 
         <label className="block text-xs font-medium text-neutral-700 mb-1">正文</label>
         <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={4} placeholder="邮件正文内容..." className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function BotNotifyConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function BotNotifyConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [channel, setChannel] = useState((data.channel as string) || 'feishu');
@@ -1423,18 +1411,27 @@ function BotNotifyConfig({ node, onClose }: { node: AppNode; onClose: () => void
   const [title, setTitle] = useState((data.title as string) || '');
   const [content, setContent] = useState((data.content as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { channel, webhookUrl, title, content });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ channel, webhookUrl, title, content }),
+    [channel, webhookUrl, title, content],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">通知渠道</label>
-        <select value={channel} onChange={(e) => setChannel(e.target.value)} className={SELECT_CLS}>
-          <option value="feishu">飞书</option><option value="dingtalk">钉钉</option><option value="wechat_work">企业微信</option><option value="slack">Slack</option>
-        </select>
+        <CustomSelect
+          value={channel}
+          onChange={(val) => setChannel(val)}
+          options={[
+            { id: 'feishu', name: '飞书' },
+            { id: 'dingtalk', name: '钉钉' },
+            { id: 'wechat_work', name: '企业微信' },
+            { id: 'slack', name: 'Slack' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">Webhook URL</label>
@@ -1448,17 +1445,13 @@ function BotNotifyConfig({ node, onClose }: { node: AppNode; onClose: () => void
         <label className="block text-xs font-medium text-neutral-700 mb-1">内容（支持 Markdown）</label>
         <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={4} placeholder="## 通知内容&#10;工作流执行结果..." className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
 // ====== 飞书生态配置面板 ======
 
-function CreateDocConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function CreateDocConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [title, setTitle] = useState((data.title as string) || '');
@@ -1466,18 +1459,27 @@ function CreateDocConfig({ node, onClose }: { node: AppNode; onClose: () => void
   const [content, setContent] = useState((data.content as string) || '');
   const [folderToken, setFolderToken] = useState((data.folderToken as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { title, docType, content, folderToken });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ title, docType, content, folderToken }),
+    [title, docType, content, folderToken],
+  );
 
   return (
     <div className="space-y-4">
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">文档类型</label>
-        <select value={docType} onChange={(e) => setDocType(e.target.value)} className={SELECT_CLS}>
-          <option value="docx">文档</option><option value="sheet">表格</option><option value="slide">幻灯片</option><option value="bitable">多维表格</option>
-        </select>
+        <CustomSelect
+          value={docType}
+          onChange={(val) => setDocType(val)}
+          options={[
+            { id: 'docx', name: '文档' },
+            { id: 'sheet', name: '表格' },
+            { id: 'slide', name: '幻灯片' },
+            { id: 'bitable', name: '多维表格' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">标题</label>
@@ -1491,15 +1493,11 @@ function CreateDocConfig({ node, onClose }: { node: AppNode; onClose: () => void
         <label className="block text-xs font-medium text-neutral-700 mb-1">目标文件夹 Token（可选）</label>
         <input type="text" value={folderToken} onChange={(e) => setFolderToken(e.target.value)} placeholder="为空则放在根目录" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function CreateTaskConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function CreateTaskConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [title, setTitle] = useState((data.title as string) || '');
@@ -1508,10 +1506,12 @@ function CreateTaskConfig({ node, onClose }: { node: AppNode; onClose: () => voi
   const [priority, setPriority] = useState((data.priority as string) || 'medium');
   const [dueDate, setDueDate] = useState((data.dueDate as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { title, description, assignee, priority, dueDate });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ title, description, assignee, priority, dueDate }),
+    [title, description, assignee, priority, dueDate],
+  );
 
   return (
     <div className="space-y-4">
@@ -1529,23 +1529,25 @@ function CreateTaskConfig({ node, onClose }: { node: AppNode; onClose: () => voi
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">优先级</label>
-        <select value={priority} onChange={(e) => setPriority(e.target.value)} className={SELECT_CLS}>
-          <option value="low">低</option><option value="medium">中</option><option value="high">高</option>
-        </select>
+        <CustomSelect
+          value={priority}
+          onChange={(val) => setPriority(val)}
+          options={[
+            { id: 'low', name: '低' },
+            { id: 'medium', name: '中' },
+            { id: 'high', name: '高' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">截止时间</label>
         <input type="datetime-local" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function CalendarEventConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function CalendarEventConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [title, setTitle] = useState((data.title as string) || '');
@@ -1554,10 +1556,12 @@ function CalendarEventConfig({ node, onClose }: { node: AppNode; onClose: () => 
   const [endTime, setEndTime] = useState((data.endTime as string) || '');
   const [roomId, setRoomId] = useState((data.roomId as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { title, description, startTime, endTime, roomId });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ title, description, startTime, endTime, roomId }),
+    [title, description, startTime, endTime, roomId],
+  );
 
   return (
     <div className="space-y-4">
@@ -1581,15 +1585,11 @@ function CalendarEventConfig({ node, onClose }: { node: AppNode; onClose: () => 
         <label className="block text-xs font-medium text-neutral-700 mb-1">会议室 ID（可选）</label>
         <input type="text" value={roomId} onChange={(e) => setRoomId(e.target.value)} placeholder="预留会议室" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function UploadFileConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function UploadFileConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [fileUrl, setFileUrl] = useState((data.fileUrl as string) || '');
@@ -1597,10 +1597,12 @@ function UploadFileConfig({ node, onClose }: { node: AppNode; onClose: () => voi
   const [fileType, setFileType] = useState((data.fileType as string) || 'auto');
   const [folderToken, setFolderToken] = useState((data.folderToken as string) || '');
 
-  const handleSave = () => {
-    updateNodeData(node.id, { fileUrl, fileName, fileType, folderToken });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ fileUrl, fileName, fileType, folderToken }),
+    [fileUrl, fileName, fileType, folderToken],
+  );
 
   return (
     <div className="space-y-4">
@@ -1614,23 +1616,28 @@ function UploadFileConfig({ node, onClose }: { node: AppNode; onClose: () => voi
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">文件类型</label>
-        <select value={fileType} onChange={(e) => setFileType(e.target.value)} className={SELECT_CLS}>
-          <option value="auto">自动识别</option><option value="docx">文档</option><option value="sheet">表格</option><option value="bitable">多维表格</option><option value="image">图片</option><option value="pdf">PDF</option>
-        </select>
+        <CustomSelect
+          value={fileType}
+          onChange={(val) => setFileType(val)}
+          options={[
+            { id: 'auto', name: '自动识别' },
+            { id: 'docx', name: '文档' },
+            { id: 'sheet', name: '表格' },
+            { id: 'bitable', name: '多维表格' },
+            { id: 'image', name: '图片' },
+            { id: 'pdf', name: 'PDF' },
+          ]}
+        />
       </div>
       <div>
         <label className="block text-xs font-medium text-neutral-700 mb-1">目标文件夹 Token（可选）</label>
         <input type="text" value={folderToken} onChange={(e) => setFolderToken(e.target.value)} placeholder="为空则放在根目录" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
-      </div>
     </div>
   );
 }
 
-function ApprovalConfig({ node, onClose }: { node: AppNode; onClose: () => void }) {
+function ApprovalConfig({ node }: { node: AppNode }) {
   const updateNodeData = useWorkflowEditorStore((s) => s.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const [approvalCode, setApprovalCode] = useState((data.approvalCode as string) || '');
@@ -1640,10 +1647,12 @@ function ApprovalConfig({ node, onClose }: { node: AppNode; onClose: () => void 
   const [approvers, setApprovers] = useState((data.approvers as string) || '[]');
   const [waitForResult, setWaitForResult] = useState<boolean>((data.waitForResult as boolean) ?? false);
 
-  const handleSave = () => {
-    updateNodeData(node.id, { approvalCode, title, applicant, formData, approvers, waitForResult });
-    onClose();
-  };
+  // 自动保存：配置变更即写入节点数据（无需手动点击保存）
+  useNodeAutoSave(
+    node.id,
+    () => ({ approvalCode, title, applicant, formData, approvers, waitForResult }),
+    [approvalCode, title, applicant, formData, approvers, waitForResult],
+  );
 
   return (
     <div className="space-y-4">
@@ -1672,10 +1681,6 @@ function ApprovalConfig({ node, onClose }: { node: AppNode; onClose: () => void 
           <input type="checkbox" checked={waitForResult} onChange={(e) => setWaitForResult(e.target.checked)} className="mr-1" />
           等待审批结果
         </label>
-      </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 text-neutral-600 hover:bg-neutral-50">取消</button>
-        <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-blue-500 text-white hover:bg-blue-600">保存</button>
       </div>
     </div>
   );
@@ -1726,7 +1731,7 @@ export default function ConfigPanel({ onListTables, onListFields }: ConfigPanelP
     const rfType = node.type as string;
     const ConfigComp = configPanelRegistry.get(rfType);
     if (ConfigComp) {
-      return <ConfigComp node={node} onClose={handleClose} onListTables={onListTables} onListFields={onListFields} />;
+      return <ConfigComp node={node} onListTables={onListTables} onListFields={onListFields} />;
     }
     return <div className="text-xs text-neutral-400">该节点无需配置</div>;
   };

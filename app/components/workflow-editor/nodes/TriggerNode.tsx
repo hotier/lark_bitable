@@ -24,6 +24,13 @@ const TRIGGER_ICONS: Record<string, React.FC<{ className?: string }>> = {
   bitable_event: Database,
 };
 
+/** 不同触发器类型对应的节点标题（随配置动态切换） */
+const TRIGGER_TITLES: Record<string, string> = {
+  webhook: 'Webhook 触发器',
+  scheduled: '定时触发',
+  bitable_event: '多维表格事件',
+};
+
 const EVENT_LABELS: Record<string, string> = {
   record_created: '记录创建',
   record_updated: '记录更新',
@@ -81,7 +88,9 @@ export default function TriggerNode({ data, selected }: NodeProps) {
         <div className="w-6 h-6 rounded-md bg-blue-100 flex items-center justify-center">
           <Icon className="w-3.5 h-3.5 text-blue-600" />
         </div>
-        <span className="text-xs font-semibold text-blue-700">{nodeData.label}</span>
+        <span className="text-xs font-semibold text-blue-700">
+          {TRIGGER_TITLES[kind] || nodeData.label || '触发器'}
+        </span>
       </div>
       <div className="px-3 py-2">
         <div className="text-[10px] text-neutral-500">{renderDetail()}</div>

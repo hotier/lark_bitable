@@ -1,25 +1,47 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { Table2, ClipboardList, FileText, ChevronRight } from 'lucide-react';
 import type { App, Table, Field, FieldType, BitableRecord, ToastMessage } from '@/types';
 import {
   listApps, refreshApps, invalidateAppsCache, createApp,
   listTables, createTable, deleteTable, listFields,
-  listRecords, createRecord, deleteApiRecord,
+  loadFirstRecords, warmUpAllRecords, loadAllRecords, invalidateRecordsCache, createRecord, deleteApiRecord,
   logout as apiLogout,
 } from '@/lib/api';
-import OAuthLogin from '@/app/components/OAuthLogin';
+import TopBar from '@/app/components/TopBar';
 import AppGrid from '@/app/components/AppGrid';
 import TableManager from '@/app/components/TableManager';
-import RecordManager from '@/app/components/RecordManager';
+import RecordManager, { getRecordFieldValue } from '@/app/components/RecordManager';
 import FieldSelector from '@/app/components/FieldSelector';
 import Toast from '@/app/components/Toast';
 
 type View = 'apps' | 'tables' | 'records';
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 20;          // 每页展示的行数
+const FETCH_PAGE_SIZE = 500;   // 拉取全量记录时每页请求量（飞书上限 500，一次遍历拿到整表）
+
+/** 前端排序比较：空值排末尾；数值按数字比较，其余按本地化字符串比较（兼容 select 的 {text} 与数组） */
+function compareRecordValues(a: unknown, b: unknown): number {
+  const norm = (v: unknown): unknown => {
+    if (v == null) return null;
+    if (Array.isArray(v)) return v.length ? norm(v[0]) : null;
+    if (typeof v === 'object' && v !== null && 'text' in (v as Record<string, unknown>)) {
+      return (v as Record<string, unknown>).text;
+    }
+    return v;
+  };
+  const av = norm(a);
+  const bv = norm(b);
+  if (av == null && bv == null) return 0;
+  if (av == null) return 1;
+  if (bv == null) return -1;
+  const an = typeof av === 'number' ? av : Number(av);
+  const bn = typeof bv === 'number' ? bv : Number(bv);
+  if (!Number.isNaN(an) && !Number.isNaN(bn)) return an - bn;
+  return String(av).localeCompare(String(bv), 'zh-CN');
+}
 
 export default function DashboardPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -31,8 +53,11 @@ export default function DashboardPage() {
   const [selectedFieldId, setSelectedFieldId] = useState('');
   // 快速导航中勾选的字段集合（多选；为空时显示全部字段）
   const [selectedFieldIds, setSelectedFieldIds] = useState<Set<string>>(new Set());
-  const [records, setRecords] = useState<BitableRecord[]>([]);
+  const [allRecords, setAllRecords] = useState<BitableRecord[]>([]); // 已加载的全量记录（本地缓存，翻页零请求）
   const [recordsLoaded, setRecordsLoaded] = useState(false);
+  const [fullLoaded, setFullLoaded] = useState(false); // 全量记录是否已静默预热完成（未完时后续翻页会触发兜底加载）
+  const [warming, setWarming] = useState(false);       // 是否正在后台静默预热全量记录（用于展示进度动画）
+  const loadKeyRef = useRef(''); // 当前加载的表+排序标识，防止后台预热结果错位写入
   const [view, setView] = useState<View>('apps');
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -40,11 +65,62 @@ export default function DashboardPage() {
   const [loadingFields, setLoadingFields] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // 翻页状态
-  const [pageTokens, setPageTokens] = useState<string[]>(['']);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
+  // 翻页状态：全量记录已缓存在本地，翻页仅为前端切片
+  const [currentPage, setCurrentPage] = useState(1);   // 展示页（1-based）
   const [total, setTotal] = useState(0);
+
+  // 列排序（前端排序，仅对当前分页内容排序）：字段 id + 方向
+  const [sortFieldId, setSortFieldId] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  // 当前展示页对应的记录：从本地全量缓存切片（翻页零接口调用），再按 sort 在前端排序（仅本页）
+  const displayRecords = useMemo(() => {
+    if (allRecords.length === 0) return [];
+    const start = (currentPage - 1) * PAGE_SIZE;
+    const page = allRecords.slice(start, start + PAGE_SIZE);
+    if (!sortFieldId) return page;
+    const field = tableFields.find((f) => f.field_id === sortFieldId);
+    if (!field) return page;
+    const dir = sortOrder === 'asc' ? 1 : -1;
+    return [...page].sort((ra, rb) =>
+      compareRecordValues(getRecordFieldValue(ra, field), getRecordFieldValue(rb, field)) * dir,
+    );
+  }, [allRecords, currentPage, sortFieldId, sortOrder, tableFields]);
+
+  // 加载指定数据表的字段 + 记录：
+  // ① 先拉字段与「首页记录」秒开首屏；② 再静默预热全量记录写入缓存，后续翻页/跳页零接口调用。
+  const loadTableData = useCallback(async (appToken: string, tableId: string) => {
+    const key = `${appToken}:${tableId}:none`;
+    loadKeyRef.current = key;
+
+    const [fieldsData, first] = await Promise.all([
+      listFields(appToken, tableId),
+      loadFirstRecords(appToken, tableId, FETCH_PAGE_SIZE),
+    ]);
+    setTableFields(fieldsData);
+    // 首屏即展示首页记录（命中全量缓存时 first 已包含整表）
+    setAllRecords(first.records || []);
+    setTotal(first.total || (first.records?.length ?? 0));
+    setRecordsLoaded(true);
+    const doneAtStart = !first.has_more || !first.page_token;
+    setFullLoaded(doneAtStart);
+
+    // ② 静默预热：后台继续拉取剩余页，完成后替换本地全量记录
+    if (!doneAtStart) {
+      setWarming(true);
+      warmUpAllRecords(appToken, tableId, FETCH_PAGE_SIZE, first.page_token!, first.records || [])
+        .then((full) => {
+          if (loadKeyRef.current !== key) return; // 已切换到别的表/排序，丢弃
+          setAllRecords(full.records || []);
+          setTotal(full.total || (full.records?.length ?? 0));
+          setFullLoaded(true);
+        })
+        .catch(() => { /* 静默失败：用户翻页时会兜底全量加载 */ })
+        .finally(() => { if (loadKeyRef.current === key) setWarming(false); });
+    } else {
+      setWarming(false);
+    }
+  }, []);
 
   const addToast = useCallback((type: ToastMessage['type'], text: string) => {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -66,8 +142,8 @@ export default function DashboardPage() {
     finally { setIsLoading(false); }
   };
 
-  const resetPagination = useCallback(() => {
-    setPageTokens(['']); setCurrentPage(1); setHasMore(false); setTotal(0);
+  const resetRecords = useCallback(() => {
+    setAllRecords([]); setCurrentPage(1); setTotal(0); setRecordsLoaded(false); setFullLoaded(false);
   }, []);
 
   const handleLogout = async () => {
@@ -101,14 +177,14 @@ export default function DashboardPage() {
 
   const handleSelectApp = useCallback((app: App) => {
     setSelectedApp(app); setView('tables');
-    setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false);
-    resetPagination();
+    setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecordsLoaded(false);
+    resetRecords();
     // 自动加载该 App 下的数据表列表
     withLoading(async () => {
       const data = await listTables(app.app_token);
       setTables(data.items || []);
     }, undefined, '获取数据表列表失败');
-  }, [resetPagination]);
+  }, [resetRecords]);
 
   const handleListTables = useCallback(() => {
     if (!selectedApp) return;
@@ -139,63 +215,41 @@ export default function DashboardPage() {
 
   const handleSelectTable = useCallback((table: Table) => {
     setSelectedTableId(table.table_id);
-    setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false); setView('records');
-    resetPagination();
-    // 自动加载该数据表的字段和记录
+    setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecordsLoaded(false); setView('records');
+    setSortFieldId(null); setSortOrder('asc');
+    resetRecords();
+    // 自动加载该数据表的字段和全量记录
     if (selectedApp) {
       withLoading(async () => {
-        const token = pageTokens[0] || '';
-        const [fieldsData, recordsData] = await Promise.all([
-          listFields(selectedApp.app_token, table.table_id),
-          listRecords(selectedApp.app_token, table.table_id, PAGE_SIZE, token),
-        ]);
-        setTableFields(fieldsData);
-        setRecords(recordsData.records || []);
-        setTotal(recordsData.total || recordsData.records.length);
-        setHasMore(recordsData.has_more || false);
-        if (recordsData.has_more && recordsData.page_token) {
-          setPageTokens((prev) => { const n = [...prev]; n[1] = recordsData.page_token; return n; });
-        }
-        setRecordsLoaded(true);
+        await loadTableData(selectedApp.app_token, table.table_id);
       }, undefined, '获取字段/记录失败');
     }
-  }, [selectedApp, pageTokens, resetPagination]);
+  }, [selectedApp, resetRecords, loadTableData]);
 
   const handleSelectorSelectApp = useCallback(async (app: App) => {
     setSelectedApp(app); setView('tables'); setTables([]); setTableFields([]);
-    setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false);
-    resetPagination();
+    setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecordsLoaded(false);
+    resetRecords();
     setLoadingTables(true);
     try { const data = await listTables(app.app_token); setTables(data.items || []); }
     catch (err) { addToast('error', `加载数据表失败: ${err instanceof Error ? err.message : '未知错误'}`); }
     finally { setLoadingTables(false); }
-  }, [resetPagination]);
+  }, [resetRecords]);
 
   const handleSelectorSelectTable = useCallback(async (table: Table) => {
     setSelectedTableId(table.table_id); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setTableFields([]);
-    setView('records'); setRecords([]); setRecordsLoaded(false);
-    resetPagination();
+    setView('records'); setRecordsLoaded(false);
+    setSortFieldId(null); setSortOrder('asc');
+    resetRecords();
     if (selectedApp) {
       setLoadingFields(true);
       try {
-        const token = pageTokens[0] || '';
-        const [fields, recordsData] = await Promise.all([
-          listFields(selectedApp.app_token, table.table_id),
-          listRecords(selectedApp.app_token, table.table_id, PAGE_SIZE, token),
-        ]);
-        setTableFields(fields);
-        setRecords(recordsData.records || []);
-        setTotal(recordsData.total || recordsData.records.length);
-        setHasMore(recordsData.has_more || false);
-        if (recordsData.has_more && recordsData.page_token) {
-          setPageTokens((prev) => { const n = [...prev]; n[1] = recordsData.page_token; return n; });
-        }
-        setRecordsLoaded(true);
+        await loadTableData(selectedApp.app_token, table.table_id);
       }
       catch (err) { addToast('error', `加载字段/记录失败: ${err instanceof Error ? err.message : '未知错误'}`); }
       finally { setLoadingFields(false); }
     }
-  }, [selectedApp, pageTokens, resetPagination]);
+  }, [selectedApp, resetRecords, loadTableData]);
 
   const handleSelectorToggleField = useCallback((field: Field) => {
     setSelectedFieldIds((prev) => {
@@ -214,43 +268,14 @@ export default function DashboardPage() {
     ? tableFields.filter((f) => selectedFieldIds.has(f.field_id))
     : tableFields;
 
-  const handleListRecords = useCallback(() => {
-    if (!selectedApp || !selectedTableId) return;
-    withLoading(async () => {
-      const token = pageTokens[currentPage - 1] ?? '';
-      const [fieldsData, recordsData] = await Promise.all([
-        listFields(selectedApp.app_token, selectedTableId),
-        listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token),
-      ]);
-      setTableFields(fieldsData);
-      setRecords(recordsData.records || []);
-      setTotal(recordsData.total || recordsData.records.length);
-      setHasMore(recordsData.has_more || false);
-      if (recordsData.has_more && recordsData.page_token) {
-        setPageTokens((prev) => { const n = [...prev]; n[currentPage] = recordsData.page_token; return n; });
-      }
-      setRecordsLoaded(true);
-    }, undefined, '刷新记录失败');
-  }, [selectedApp, selectedTableId, currentPage, pageTokens]);
-
   const handleDeleteRecord = useCallback(async (recordId: string) => {
     if (!selectedApp || !selectedTableId) return;
     await withLoading(async () => {
       await deleteApiRecord(selectedApp.app_token, selectedTableId, recordId);
-      const token = pageTokens[currentPage - 1] ?? '';
-      const [fieldsData, recordsData] = await Promise.all([
-        listFields(selectedApp.app_token, selectedTableId),
-        listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token),
-      ]);
-      setTableFields(fieldsData);
-      setRecords(recordsData.records || []);
-      setTotal(recordsData.total || recordsData.records.length);
-      setHasMore(recordsData.has_more || false);
-      if (recordsData.has_more && recordsData.page_token) {
-        setPageTokens((prev) => { const n = [...prev]; n[currentPage] = recordsData.page_token; return n; });
-      }
+      invalidateRecordsCache(selectedApp.app_token, selectedTableId);
+      await loadTableData(selectedApp.app_token, selectedTableId);
     }, '记录已删除', '删除记录失败');
-  }, [selectedApp, selectedTableId, currentPage, pageTokens]);
+  }, [selectedApp, selectedTableId, loadTableData]);
 
   const handleCreateRecord = useCallback(async (fields: Record<string, unknown>) => {
     if (!selectedApp || !selectedTableId) return;
@@ -261,107 +286,67 @@ export default function DashboardPage() {
         namedFields[fieldMeta?.name || fieldId] = value;
       }
       await createRecord(selectedApp.app_token, selectedTableId, namedFields);
-      const token = pageTokens[currentPage - 1] ?? '';
-      const [fieldsData, recordsData] = await Promise.all([
-        listFields(selectedApp.app_token, selectedTableId),
-        listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token),
-      ]);
-      setTableFields(fieldsData);
-      setRecords(recordsData.records || []);
-      setTotal(recordsData.total || recordsData.records.length);
-      setHasMore(recordsData.has_more || false);
-      if (recordsData.has_more && recordsData.page_token) {
-        setPageTokens((prev) => { const n = [...prev]; n[currentPage] = recordsData.page_token; return n; });
-      }
+      invalidateRecordsCache(selectedApp.app_token, selectedTableId);
+      await loadTableData(selectedApp.app_token, selectedTableId);
     }, '记录创建成功', '创建记录失败');
-  }, [selectedApp, selectedTableId, tableFields, currentPage, pageTokens]);
+  }, [selectedApp, selectedTableId, tableFields, loadTableData]);
 
-  // 翻页：上一页
-  const handlePrevPage = useCallback(() => {
-    if (!selectedApp || !selectedTableId || currentPage <= 1) return;
-    const prevPage = currentPage - 1;
-    withLoading(async () => {
-      const token = pageTokens[prevPage - 1] ?? '';
-      const [fieldsData, recordsData] = await Promise.all([
-        listFields(selectedApp.app_token, selectedTableId),
-        listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token),
-      ]);
-      setTableFields(fieldsData);
-      setRecords(recordsData.records || []);
-      setHasMore(!!pageTokens[prevPage + 1] || recordsData.has_more);
-      if (recordsData.has_more && recordsData.page_token) {
-        setPageTokens((prev) => { const n = [...prev]; n[prevPage] = recordsData.page_token; return n; });
+  // 兜底：全量尚未预热完成时，若目标页超出本地已加载范围，则等待/触发全量加载
+  const ensureFullLoaded = useCallback(async (targetPage: number) => {
+    if (fullLoaded) return;
+    if (!selectedApp || !selectedTableId) return;
+    const start = (targetPage - 1) * PAGE_SIZE;
+    if (start < allRecords.length) return; // 目标页已在本地切片范围内，无需加载
+    const key = `${selectedApp.app_token}:${selectedTableId}:none`;
+    if (loadKeyRef.current !== key) return; // 已切换表
+    setIsLoading(true);
+    try {
+      const full = await loadAllRecords(selectedApp.app_token, selectedTableId, FETCH_PAGE_SIZE);
+      if (loadKeyRef.current === key) {
+        setAllRecords(full.records || []);
+        setTotal(full.total || (full.records?.length ?? 0));
+        setFullLoaded(true);
       }
-      setCurrentPage(prevPage);
-    }, undefined, '翻页失败');
-  }, [selectedApp, selectedTableId, currentPage, pageTokens]);
+    } catch { /* 忽略，保留已加载部分 */ }
+    finally { setIsLoading(false); }
+  }, [fullLoaded, selectedApp, selectedTableId, allRecords.length]);
 
-  // 翻页：下一页
-  const handleNextPage = useCallback(() => {
-    if (!selectedApp || !selectedTableId || !hasMore) return;
-    const nextPage = currentPage + 1;
-    withLoading(async () => {
-      const token = pageTokens[nextPage - 1] ?? pageTokens[currentPage - 1] ?? '';
-      const [fieldsData, recordsData] = await Promise.all([
-        listFields(selectedApp.app_token, selectedTableId),
-        listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token),
-      ]);
-      setTableFields(fieldsData);
-      setRecords(recordsData.records || []);
-      setTotal(recordsData.total || recordsData.records.length);
-      setHasMore(recordsData.has_more || false);
-      if (recordsData.has_more && recordsData.page_token) {
-        setPageTokens((prev) => { const n = [...prev]; n[nextPage] = recordsData.page_token; return n; });
-      }
-      setCurrentPage(nextPage);
-    }, undefined, '翻页失败');
-  }, [selectedApp, selectedTableId, currentPage, hasMore, pageTokens]);
+  // 翻页：上一页（本地切片，零接口调用；越界时兜底全量加载）
+  const handlePrevPage = useCallback(async () => {
+    const target = Math.max(1, currentPage - 1);
+    await ensureFullLoaded(target);
+    setCurrentPage(target);
+  }, [currentPage, ensureFullLoaded]);
 
-  // 翻页：跳转到指定页码
+  // 翻页：下一页（本地切片，零接口调用；越界时兜底全量加载）
+  const handleNextPage = useCallback(async () => {
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const target = Math.min(totalPages, currentPage + 1);
+    await ensureFullLoaded(target);
+    setCurrentPage(target);
+  }, [currentPage, total, ensureFullLoaded]);
+
+  // 翻页：跳转到指定页码（本地切片，零接口调用；越界时兜底全量加载）
   const handleGoToPage = useCallback(async (targetPage: number) => {
-    if (!selectedApp || !selectedTableId || targetPage === currentPage) return;
-    const totalPages = Math.ceil(total / PAGE_SIZE);
-    if (targetPage < 1 || targetPage > totalPages) return;
+    if (!selectedApp || !selectedTableId) return;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (targetPage < 1 || targetPage > totalPages || targetPage === currentPage) return;
+    await ensureFullLoaded(targetPage);
+    setCurrentPage(targetPage);
+  }, [selectedApp, selectedTableId, currentPage, total, ensureFullLoaded]);
 
-    await withLoading(async () => {
-      let token = '';
-
-      if (targetPage > currentPage) {
-        // 向前翻：尽可能利用已缓存的 token，必要时逐步获取
-        token = pageTokens[currentPage - 1] ?? '';
-        for (let p = currentPage; p < targetPage; p++) {
-          const cachedToken = pageTokens[p - 1];
-          if (cachedToken !== undefined) token = cachedToken;
-          if (p < targetPage - 1) {
-            const res = await listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token);
-            token = res.page_token || '';
-            if (!res.has_more) break;
-          }
-        }
-      } else {
-        // 向后翻：cursor 分页不支持回退，从第 1 页重新链式获取
-        token = pageTokens[0] ?? '';
-        for (let p = 1; p < targetPage; p++) {
-          const res = await listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token);
-          token = res.page_token || '';
-          if (!res.has_more) break;
-        }
-      }
-
-      const [fieldsData, recordsData] = await Promise.all([
-        listFields(selectedApp.app_token, selectedTableId),
-        listRecords(selectedApp.app_token, selectedTableId, PAGE_SIZE, token),
-      ]);
-      setTableFields(fieldsData);
-      setRecords(recordsData.records || []);
-      setTotal(recordsData.total || recordsData.records.length);
-      setHasMore(recordsData.has_more || false);
-      if (recordsData.has_more && recordsData.page_token) {
-        setPageTokens((prev) => { const n = [...prev]; n[targetPage] = recordsData.page_token; return n; });
-      }
-      setCurrentPage(targetPage);
-    }, undefined, '翻页失败');
-  }, [selectedApp, selectedTableId, currentPage, total, pageTokens, withLoading]);
+  // 列排序：点击表头切换 未排序→升序→降序→取消（纯前端排序当前分页，无需请求飞书）
+  const handleSort = useCallback((fieldId: string) => {
+    let newFieldId: string | null = fieldId;
+    let newOrder: 'asc' | 'desc' = 'asc';
+    if (sortFieldId === fieldId) {
+      if (sortOrder === 'asc') newOrder = 'desc';
+      else { newFieldId = null; newOrder = 'asc'; }
+    }
+    setSortFieldId(newFieldId);
+    setSortOrder(newOrder);
+    setCurrentPage(1); // 回到首页，避免停留在已重排的越界页
+  }, [sortFieldId, sortOrder]);
 
   useEffect(() => { if (isAuthenticated && apps.length === 0) handleListApps(); }, [isAuthenticated]);
 
@@ -378,24 +363,25 @@ export default function DashboardPage() {
       <Toast messages={toasts} onDismiss={dismissToast} />
 
       {/* Top Bar */}
-      <header
-        className="z-20 flex items-center justify-between h-14 px-6 flex-shrink-0"
-        style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
+      <TopBar
+        isAuthenticated={isAuthenticated} isLoading={isLoading}
+        onFetchApps={handleSyncApps} onLogout={handleLogout}
       >
         {/* Breadcrumb */}
-        <nav className="flex items-center gap-1.5 text-sm" aria-label="Breadcrumb">
+        <nav className="flex items-center gap-1.5 text-base" aria-label="Breadcrumb">
           <button
-            onClick={() => { setView('apps'); setSelectedApp(null); setTables([]); setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false); resetPagination(); }}
-            className="font-medium transition-colors"
+            onClick={() => { setView('apps'); setSelectedApp(null); setTables([]); setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecordsLoaded(false); resetRecords(); }}
+            className="flex items-center gap-2 font-semibold transition-colors"
             style={{ color: view === 'apps' ? 'var(--text)' : 'var(--text-tertiary)' }}
           >
-            所有表格
+            <Table2 className="w-5 h-5 text-orange-500" />
+            多维表格
           </button>
           {selectedApp && (
             <>
               <ChevronRight className="w-4 h-4 text-neutral-300" />
               <button
-                onClick={() => { setView('tables'); setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecords([]); setRecordsLoaded(false); }}
+                onClick={() => { setView('tables'); setSelectedTableId(''); setSelectedFieldId(''); setSelectedFieldIds(new Set()); setRecordsLoaded(false); resetRecords(); }}
                 className="font-medium transition-colors truncate max-w-[200px]"
                 style={{ color: view === 'tables' ? 'var(--text)' : 'var(--text-tertiary)' }}
               >
@@ -412,14 +398,7 @@ export default function DashboardPage() {
             </>
           )}
         </nav>
-
-        <div className="flex items-center gap-3">
-          <OAuthLogin
-            isAuthenticated={isAuthenticated} oauthUrl="" isLoading={isLoading}
-            onFetchApps={handleSyncApps} onLogout={handleLogout} hideLogin
-          />
-        </div>
-      </header>
+      </TopBar>
 
       <div className="flex-1 overflow-hidden flex flex-col">
         {/* Field Selector / 快速导航 */}
@@ -501,12 +480,13 @@ export default function DashboardPage() {
               {view === 'records' && (
                 <RecordManager
                   appToken={selectedApp?.app_token ?? ''} tableId={selectedTableId}
-                  fields={tableFields} displayFields={displayFields} records={records} isLoading={isLoading}
+                  fields={tableFields} displayFields={displayFields} records={displayRecords} isLoading={isLoading}
                   onSwitchToTables={() => setView('tables')}
                   onCreateRecord={handleCreateRecord} onDeleteRecord={handleDeleteRecord}
-                  onRefreshRecords={handleListRecords}
-                  currentPage={currentPage} hasMore={hasMore} total={total} pageSize={PAGE_SIZE}
+                  warming={warming} loadedCount={allRecords.length}
+                  currentPage={currentPage} total={total} pageSize={PAGE_SIZE}
                   onNextPage={handleNextPage} onPrevPage={handlePrevPage} onGoToPage={handleGoToPage}
+                  sortFieldId={sortFieldId} sortOrder={sortOrder} onSort={handleSort}
                 />
               )}
             </div>

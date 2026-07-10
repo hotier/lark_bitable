@@ -167,7 +167,7 @@ function CreateAppModal({
                 placeholder="例如：项目管理、客户跟进表..."
                 maxLength={100}
                 autoFocus
-                className="w-full pl-10 pr-4 py-3 text-sm border border-neutral-200 rounded-md focus:border-amber-400 focus:ring-2 focus:ring-amber-100 outline-none transition-all placeholder:text-neutral-300"
+                className="w-full pl-10 pr-4 py-3 text-sm border border-neutral-200 rounded-md focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none transition-all placeholder:text-neutral-300"
               />
             </div>
           </div>
@@ -184,7 +184,7 @@ function CreateAppModal({
                 value={folderToken}
                 onChange={(e) => setFolderToken(e.target.value)}
                 placeholder="留空则创建在根目录"
-                className="w-full pl-10 pr-4 py-3 text-sm border border-neutral-200 rounded-md focus:border-amber-400 focus:ring-2 focus:ring-amber-100 outline-none transition-all placeholder:text-neutral-300 font-mono"
+                className="w-full pl-10 pr-4 py-3 text-sm border border-neutral-200 rounded-md focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none transition-all placeholder:text-neutral-300 font-mono"
               />
             </div>
             <p className="text-xs text-neutral-400 mt-1.5 ml-1">
@@ -252,7 +252,7 @@ export default function AppGrid({
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   return (
-    <div>
+    <div className="h-full overflow-y-auto pr-1">
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-lg font-bold text-neutral-800 flex items-center gap-2">
           <Table2 className="w-5 h-5" />

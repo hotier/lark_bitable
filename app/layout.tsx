@@ -14,7 +14,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "飞书多维表格 · Bitable Manager",
+  title: "飞书工作台",
   description: "通过飞书开放平台 API 管理多维表格数据",
 };
 
@@ -28,7 +28,15 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="h-full">{children}</body>
+      <body className="h-full">
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',d);}catch(e){}})();",
+          }}
+        />
+        {children}
+      </body>
     </html>
   );
 }

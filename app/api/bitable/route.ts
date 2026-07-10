@@ -2,10 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { bitableService } from '@/services/feishu-bitable';
 import { withCache, cacheKey, cacheDel, cacheDelByPrefix, TTL } from '@/lib/cache';
 import { ensureMigrations } from '@/lib/db';
+import { logger } from '@/lib/logger';
+import { validateBitableBody } from '@/lib/validation';
+import { okResponse, errorResponse } from '@/lib/api-response';
 
 /** Cookie 名称常量 */
 const TOKEN_COOKIE = 'feishu_token';
 const EXPIRE_COOKIE = 'feishu_token_expire';
+
+/** 会话寿命（秒），与飞书 access_token 解耦，跟随 refresh_token 有效期（最长 30 天） */
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 
 /** 从 request cookies 中读取 token 信息 */
 function getTokenFromCookies(request: NextRequest): { accessToken: string | null; expire: number } {
@@ -49,13 +55,14 @@ export async function POST(request: NextRequest) {
       tableName,
       folderToken,
       appName,
+      force,
     } = body;
+    // 强制同步：true 时绕过服务端缓存，直接重新拉取飞书数据
+    const forceRefresh = force === true || force === 'true';
 
-    if (!action) {
-      return NextResponse.json(
-        { error: '缺少必要参数: action' },
-        { status: 400 }
-      );
+    const bodyError = validateBitableBody(body);
+    if (bodyError) {
+      return NextResponse.json({ success: false, error: bodyError }, { status: 400 });
     }
 
     // ====== 认证相关操作（无需 token） ======
@@ -65,46 +72,61 @@ export async function POST(request: NextRequest) {
       const proto = request.headers.get('x-forwarded-proto') || 'http';
       const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || 'localhost:3000';
       const redirectUri = `${proto}://${host}/api/bitable/oauth/callback`;
-      return NextResponse.json({ success: true, data: { url: bitableService.getOAuthUrl(undefined, redirectUri) } });
+      return okResponse({ url: bitableService.getOAuthUrl(undefined, redirectUri) });
     }
 
     /* 检查认证状态（exchangeAuthCode 现等同于 authStatus，向后兼容） */
     if (action === 'exchangeAuthCode' || action === 'authStatus') {
       const { accessToken, expire } = getTokenFromCookies(request);
-      const valid = accessToken !== null && Date.now() < expire;
-      // 将 token 回填到 bitableService 实例（供 webhook 等场景使用）
-      if (valid && accessToken) {
-        bitableService.setUserAccessToken(accessToken, expire);
+      const sessionValid = accessToken !== null && Date.now() < expire;
+      // 会话有效即视为已登录；服务端飞书 token 由 ensureAuth() 兜底维护/刷新
+      let authed = sessionValid;
+      if (authed) {
+        try {
+          authed = await bitableService.ensureAuth();
+        } catch {
+          authed = false;
+        }
       }
-      return NextResponse.json({ success: true, data: { authenticated: valid } });
+      return NextResponse.json({ success: true, data: { authenticated: authed } });
     }
 
     /* 登出 */
     if (action === 'logout') {
       bitableService.clearUserAccessToken();
-      const response = NextResponse.json({ success: true, data: { ok: true } });
+      const response = okResponse({ ok: true });
       clearAuthCookies(response);
       return response;
     }
 
     // ====== 以下操作需要认证 ======
 
-    // 从 HttpOnly Cookie 读取 token
+    // 会话级登录态：只看 Cookie 是否存在且未过期（与飞书 token 寿命解耦）
     const { accessToken: cookieToken, expire: cookieExpire } = getTokenFromCookies(request);
-    const isAuth = cookieToken !== null && Date.now() < cookieExpire;
+    const sessionValid = cookieToken !== null && Date.now() < cookieExpire;
 
-    // 回填 token 到服务实例（供 webhook 等场景使用）
-    if (isAuth && cookieToken) {
-      bitableService.setUserAccessToken(cookieToken, cookieExpire);
+    if (!sessionValid) {
+      return NextResponse.json(
+        { success: false, error: '未登录或会话已过期', needLogin: true },
+        { status: 401 },
+      );
     }
 
-    const uaToken: string | null = isAuth ? cookieToken : null;
+    // 让服务端用 DB / refresh_token 自动维护有效飞书 token，
+    // 不再用 Cookie 里可能已过期的 access_token 回填。
+    const authed = await bitableService.ensureAuth();
+    if (!authed) {
+      return errorResponse('登录已失效，请重新授权', 401, { needLogin: true });
+    }
+
+    const uaToken: string | null = null; // 统一走服务端托管 token
 
     let result;
 
     switch (action) {
       // ====== 多维表格 ======
       case 'listApps':
+        if (forceRefresh) cacheDel(cacheKey('apps', pageToken || '0', folderToken || ''));
         result = await withCache(
           cacheKey('apps', pageToken || '0', folderToken || ''),
           () => bitableService.listApps(pageSize, pageToken, folderToken, uaToken),
@@ -120,6 +142,7 @@ export async function POST(request: NextRequest) {
 
       // ====== 云文档 ======
       case 'listDocs':
+        if (forceRefresh) cacheDel(cacheKey('docs', pageToken || '0', folderToken || ''));
         result = await withCache(
           cacheKey('docs', pageToken || '0', folderToken || ''),
           () => bitableService.listDocs(pageSize, pageToken, folderToken, uaToken),
@@ -135,6 +158,7 @@ export async function POST(request: NextRequest) {
 
       // ====== 电子表格 ======
       case 'listSheets':
+        if (forceRefresh) cacheDel(cacheKey('sheets', pageToken || '0', folderToken || ''));
         result = await withCache(
           cacheKey('sheets', pageToken || '0', folderToken || ''),
           () => bitableService.listSheets(pageSize, pageToken, folderToken, uaToken),
@@ -153,9 +177,19 @@ export async function POST(request: NextRequest) {
         const { fileToken, fileType: fType } = body;
         if (!fileToken || !fType) throw new Error('缺少参数: fileToken, fileType');
         await bitableService.deleteFile(fileToken, fType, uaToken);
-        cacheDelByPrefix('apps:');
-        cacheDelByPrefix('docs:');
-        cacheDelByPrefix('sheets:');
+        // 分块失效：仅清除被删除文件所属模块的缓存，避免误伤其他模块导致重新拉取
+        {
+          const t = String(fType).toLowerCase();
+          if (t === 'bitable') cacheDelByPrefix('apps:');
+          else if (t === 'sheet') cacheDelByPrefix('sheets:');
+          else if (t === 'doc' || t === 'docx') cacheDelByPrefix('docs:');
+          else {
+            // 未知类型才回退到全量失效，保证数据一致性
+            cacheDelByPrefix('apps:');
+            cacheDelByPrefix('docs:');
+            cacheDelByPrefix('sheets:');
+          }
+        }
         result = { ok: true };
         break;
       }
@@ -163,6 +197,7 @@ export async function POST(request: NextRequest) {
       // ====== 数据表 ======
       case 'listTables':
         if (!appToken) throw new Error('缺少参数: appToken');
+        if (forceRefresh) cacheDel(cacheKey('tables', appToken, pageToken || '0'));
         result = await withCache(
           cacheKey('tables', appToken, pageToken || '0'),
           () => bitableService.listTables(appToken, pageSize, pageToken, uaToken),
@@ -186,6 +221,7 @@ export async function POST(request: NextRequest) {
 
       case 'listFields':
         if (!appToken || !tableId) throw new Error('缺少参数: appToken, tableId');
+        if (forceRefresh) cacheDel(cacheKey('fields', appToken, tableId));
         result = await withCache(
           cacheKey('fields', appToken, tableId),
           () => bitableService.listFields(appToken, tableId, pageSize, pageToken, uaToken),
@@ -194,44 +230,33 @@ export async function POST(request: NextRequest) {
         break;
 
       // ====== 记录 CRUD ======
+      // 注意：记录的缓存（list/read）与写后失效已下沉到 bitableService，
+      // 由多维表格页面与工作流执行器共用 lib/cache 的同一套缓存。
       case 'list':
         if (!appToken || !tableId) throw new Error('缺少参数: appToken, tableId');
-        result = await withCache(
-          cacheKey('records', appToken, tableId, pageToken || '0'),
-          () => bitableService.listRecords(appToken, tableId, pageSize, pageToken, uaToken),
-          TTL.RECORDS,
-        );
+        result = await bitableService.listRecords(appToken, tableId, pageSize, pageToken, uaToken, forceRefresh);
         break;
 
       case 'read':
         if (!appToken || !tableId || !recordId) throw new Error('缺少参数: appToken, tableId, recordId');
-        result = await withCache(
-          cacheKey('record', appToken, tableId, recordId),
-          () => bitableService.readRecord(appToken, tableId, recordId, uaToken),
-          TTL.RECORD,
-        );
+        result = await bitableService.readRecord(appToken, tableId, recordId, uaToken, forceRefresh);
         break;
 
       case 'create':
         if (!appToken || !tableId || !fields) throw new Error('缺少参数: appToken, tableId, fields');
-        console.log(`[create] appToken=${appToken} tableId=${tableId} fields (by name)=`, JSON.stringify(fields));
+        logger.debug(`[create] appToken=${appToken} tableId=${tableId} fields (by name)=`, JSON.stringify(fields));
         result = await bitableService.createRecord(appToken, tableId, fields, uaToken);
-        cacheDelByPrefix(`records:${appToken}:${tableId}`);
         break;
 
       case 'update':
         if (!appToken || !tableId || !recordId || !fields)
           throw new Error('缺少参数: appToken, tableId, recordId, fields');
         result = await bitableService.updateRecord(appToken, tableId, recordId, fields, uaToken);
-        cacheDelByPrefix(`records:${appToken}:${tableId}`);
-        cacheDel(`record:${appToken}:${tableId}:${recordId}`);
         break;
 
       case 'delete':
         if (!appToken || !tableId || !recordId) throw new Error('缺少参数: appToken, tableId, recordId');
         result = await bitableService.deleteRecord(appToken, tableId, recordId, uaToken);
-        cacheDelByPrefix(`records:${appToken}:${tableId}`);
-        cacheDel(`record:${appToken}:${tableId}:${recordId}`);
         break;
 
       default:
@@ -241,25 +266,30 @@ export async function POST(request: NextRequest) {
         );
     }
 
-    return NextResponse.json({ success: true, data: result });
-  } catch (error: any) {
+    const response = okResponse(result);
+    // 滑动续期：活跃用户每次成功请求都刷新会话到期时间（直至 refresh_token 窗口）
+    response.cookies.set(EXPIRE_COOKIE, String(Date.now() + SESSION_MAX_AGE * 1000), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax' as const,
+      path: '/',
+    });
+    return response;
+  } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误';
-    const feishuCode: number | undefined = error?.feishuCode ?? error?.response?.data?.code;
-    const feishuMsg: string | undefined = error?.feishuMsg ?? error?.response?.data?.msg;
-    console.error(
+    const err = error as {
+      feishuCode?: number;
+      feishuMsg?: string;
+      response?: { data?: { code?: number; msg?: string } };
+    };
+    const feishuCode: number | undefined = err.feishuCode ?? err.response?.data?.code;
+    const feishuMsg: string | undefined = err.feishuMsg ?? err.response?.data?.msg;
+    logger.error(
       `[API /api/bitable] action=${action} | appToken=${appToken} | tableId=${tableId}`,
       feishuCode !== undefined ? `| feishuCode=${feishuCode} feishuMsg=${feishuMsg}` : '',
       '\n  Error:',
-      error instanceof Error ? error.message : error
+      message,
     );
-    return NextResponse.json(
-      {
-        success: false,
-        error: message,
-        feishuCode,
-        feishuMsg,
-      },
-      { status: 500 }
-    );
+    return errorResponse(message, 500, { feishuCode, feishuMsg });
   }
 }

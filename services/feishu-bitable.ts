@@ -1,11 +1,13 @@
 import { Client, withUserAccessToken } from '@larksuiteoapi/node-sdk';
 import { loadTokenSync, saveToken, deleteToken, reloadToken } from '@/lib/token-store';
+import { withCache, cacheKey, cacheDel, cacheDelByPrefix, TTL } from '@/lib/cache';
 import type {
   BitableRecord,
   ListRecordsData,
   ListTablesData,
   Table,
   App,
+  Field,
   FieldType,
   DriveFileType,
   UserProfile,
@@ -143,6 +145,9 @@ class FeishuBitable {
     this.userTokenExpireTime = Date.now() + ((data.expires_in || 7200) - 60) * 1000;
     if (data.refresh_token) {
       this.refreshToken = data.refresh_token;
+      // 飞书可能轮换 refresh_token，重置其过期窗口（默认 7 天，避免被旧窗口误判过期）
+      const rtSeconds = (data as any).refresh_expires_in || 604800;
+      this.refreshTokenExpireTime = Date.now() + (rtSeconds - 60) * 1000;
     }
 
     // 刷新后持久化新的 token 到文件
@@ -355,63 +360,82 @@ class FeishuBitable {
 
   // ====== Bitable API（全部支持 userAccessToken 参数） ======
 
+  /**
+   * 列出记录（带服务端缓存）
+   * 缓存 key 形如 records:appToken:tableId:pageToken:pageSize，
+   * 与 /api/bitable 路由、工作流执行器共用 lib/cache 的同一套缓存。
+   * 排序已改为前端进行，服务端不再接收 sort 参数。
+   */
   async listRecords(
     appToken: string,
     tableId: string,
     pageSize = 100,
     pageToken = '',
     userAccessToken?: string | null,
+    force = false,
   ): Promise<ListRecordsData> {
-    console.log(`[FeishuBitable] listRecords appToken=${appToken} tableId=${tableId} pageSize=${pageSize}`);
+    const cacheKeyStr = cacheKey('records', appToken, tableId, pageToken || '0', String(pageSize));
+    if (force) cacheDelByPrefix(cacheKey('records', appToken, tableId));
+    return withCache(cacheKeyStr, async () => {
+      console.log(`[FeishuBitable] listRecords appToken=${appToken} tableId=${tableId} pageSize=${pageSize}`);
 
-    const res = await this.client.bitable.appTableRecord.list({
-      path: { app_token: appToken, table_id: tableId },
-      params: { page_size: pageSize, page_token: pageToken },
-    }, this.sdkOptions(userAccessToken));
+      const listParams: Record<string, unknown> = { page_size: pageSize, page_token: pageToken };
 
-    if (res.code !== 0) {
-      throwFeishuError('列出记录失败', res.code, res.msg);
-    }
+      const res = await this.client.bitable.appTableRecord.list({
+        path: { app_token: appToken, table_id: tableId },
+        params: listParams,
+      }, this.sdkOptions(userAccessToken));
 
-    const d = res.data!;
-    const records: BitableRecord[] = (d.items || []).map((item) => ({
-      record_id: item.record_id || '',
-      fields: (item.fields || {}) as Record<string, unknown>,
-      created_time: String(item.created_time || ''),
-      updated_time: String(item.last_modified_time || ''),
-    }));
+      if (res.code !== 0) {
+        throwFeishuError('列出记录失败', res.code, res.msg);
+      }
 
-    return {
-      records,
-      has_more: d.has_more || false,
-      page_token: d.page_token || '',
-      total: d.total || records.length,
-    };
+      const d = res.data!;
+      const records: BitableRecord[] = (d.items || []).map((item) => ({
+        record_id: item.record_id || '',
+        fields: (item.fields || {}) as Record<string, unknown>,
+        created_time: String(item.created_time || ''),
+        updated_time: String(item.last_modified_time || ''),
+      }));
+
+      return {
+        records,
+        has_more: d.has_more || false,
+        page_token: d.page_token || '',
+        total: d.total || records.length,
+      };
+    }, TTL.RECORDS);
   }
 
+  /** 读取单条记录（带服务端缓存，与 /api/bitable 路由共用 lib/cache） */
   async readRecord(
     appToken: string,
     tableId: string,
     recordId: string,
     userAccessToken?: string | null,
+    force = false,
   ): Promise<BitableRecord> {
-    console.log(`[FeishuBitable] readRecord appToken=${appToken} tableId=${tableId} recordId=${recordId}`);
+    const cacheKeyStr = cacheKey('record', appToken, tableId, recordId);
+    if (force) cacheDel(cacheKeyStr);
+    return withCache(cacheKeyStr, async () => {
+      console.log(`[FeishuBitable] readRecord appToken=${appToken} tableId=${tableId} recordId=${recordId}`);
 
-    const res = await this.client.bitable.appTableRecord.get({
-      path: { app_token: appToken, table_id: tableId, record_id: recordId },
-    }, this.sdkOptions(userAccessToken));
+      const res = await this.client.bitable.appTableRecord.get({
+        path: { app_token: appToken, table_id: tableId, record_id: recordId },
+      }, this.sdkOptions(userAccessToken));
 
-    if (res.code !== 0) {
-      throwFeishuError('读取记录失败', res.code, res.msg);
-    }
+      if (res.code !== 0) {
+        throwFeishuError('读取记录失败', res.code, res.msg);
+      }
 
-    const r = res.data?.record;
-    return {
-      record_id: r?.record_id || recordId,
-      fields: (r?.fields || {}) as Record<string, unknown>,
-      created_time: String(r?.created_time || ''),
-      updated_time: String(r?.last_modified_time || ''),
-    };
+      const r = res.data?.record;
+      return {
+        record_id: r?.record_id || recordId,
+        fields: (r?.fields || {}) as Record<string, unknown>,
+        created_time: String(r?.created_time || ''),
+        updated_time: String(r?.last_modified_time || ''),
+      };
+    }, TTL.RECORD);
   }
 
   async createRecord(
@@ -431,6 +455,9 @@ class FeishuBitable {
     if (res.code !== 0) {
       throwFeishuError('创建记录失败', res.code, res.msg);
     }
+
+    // 写操作后失效该表的记录缓存（多维表格页面与工作流节点共用 lib/cache）
+    cacheDelByPrefix(cacheKey('records', appToken, tableId));
 
     const r = res.data?.record;
     return {
@@ -460,6 +487,10 @@ class FeishuBitable {
       throwFeishuError('更新记录失败', res.code, res.msg);
     }
 
+    // 写操作后失效该表的记录缓存与单条记录缓存（多维表格页面与工作流节点共用 lib/cache）
+    cacheDelByPrefix(cacheKey('records', appToken, tableId));
+    cacheDel(cacheKey('record', appToken, tableId, recordId));
+
     const r = res.data?.record;
     return {
       record_id: r?.record_id || recordId,
@@ -485,6 +516,10 @@ class FeishuBitable {
     if (res.code !== 0) {
       throwFeishuError('删除记录失败', res.code, res.msg);
     }
+
+    // 写操作后失效该表的记录缓存与单条记录缓存（多维表格页面与工作流节点共用 lib/cache）
+    cacheDelByPrefix(cacheKey('records', appToken, tableId));
+    cacheDel(cacheKey('record', appToken, tableId, recordId));
 
     return res.data?.record_id || recordId;
   }
@@ -663,7 +698,7 @@ class FeishuBitable {
     pageSize = 100,
     pageToken = '',
     userAccessToken?: string | null,
-  ): Promise<{ field_id: string; name: string; type: FieldType }[]> {
+  ): Promise<Field[]> {
     console.log('[FeishuBitable.listFields] appToken=%s tableId=%s pageSize=%s pageToken=%s',
       appToken, tableId, pageSize, pageToken);
 
@@ -689,6 +724,12 @@ class FeishuBitable {
       field_id: f.field_id || '',
       name: f.field_name,
       type: FIELD_TYPE_MAP[f.type] || 'text',
+      // 单选/多选选项：飞书 property.options 里用 name 承载选项文字（注意不是 text）
+      options:
+        f.property?.options?.map((o: { id?: string; name?: string; text?: string }) => ({
+          id: o.id || '',
+          text: o.name ?? o.text ?? '',
+        })) || [],
     }));
 
     console.log('[FeishuBitable.listFields] count=%d | has_more=%s | total=%s',

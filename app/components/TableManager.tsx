@@ -5,6 +5,7 @@ import { ClipboardList, Sparkles } from 'lucide-react';
 import type { Table, FieldType } from '@/types';
 import { FIELD_TYPE_OPTIONS } from '@/types';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
+import { CustomSelect } from '@/app/components/CustomSelect';
 
 interface TableManagerProps {
   selectedApp: { app_token: string; name: string } | null;
@@ -293,17 +294,12 @@ function CreateFormSidebar({
                   placeholder="字段名"
                   className="flex-1 px-3 py-2 text-sm bg-white border border-neutral-200 rounded-md focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all outline-none placeholder:text-neutral-300"
                 />
-                <select
+                <CustomSelect
                   value={field.type}
-                  onChange={(e) => updateField(index, { type: e.target.value as FieldType })}
-                  className="px-3 py-2 text-sm bg-white border border-neutral-200 rounded-md focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all outline-none text-neutral-600 cursor-pointer truncate"
-                >
-                  {FIELD_TYPE_OPTIONS.map((ft) => (
-                    <option key={ft.value} value={ft.value}>
-                      {ft.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => updateField(index, { type: val as FieldType })}
+                  options={FIELD_TYPE_OPTIONS.map((ft) => ({ id: ft.value, name: ft.label }))}
+                  className="w-[150px] shrink-0"
+                />
                 {newTableFields.length > 1 && (
                   <button
                     onClick={() => removeField(index)}
