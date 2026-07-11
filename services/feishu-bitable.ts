@@ -1126,6 +1126,84 @@ class FeishuBitable {
     }
   }
 
+  /**
+   * 导出整个多维表格为 xlsx / csv（基于 drive 的异步导出任务）。
+   * 多维表格本身没有独立导出接口，需走云文档导出任务：
+   *   ① drive.exportTask.create 创建任务 → 拿到 ticket
+   *   ② 轮询 drive.exportTask.get 直到 job_status=1（完成）/2（失败）
+   *   ③ drive.exportTask.download 用返回的 file_token 下载文件流
+   * @param appToken 多维表格的 app_token（即其 drive file_token）
+   * @param format 'xlsx' | 'csv'
+   */
+  async exportBitable(
+    appToken: string,
+    format: 'xlsx' | 'csv' = 'xlsx',
+    userAccessToken?: string | null,
+  ): Promise<{ buffer: Buffer; fileName: string; fileExtension: string }> {
+    console.log('[FeishuBitable.exportBitable] appToken=%s format=%s', appToken, format);
+
+    const opts = this.sdkOptions(userAccessToken);
+
+    // ① 创建导出任务
+    const createRes = await this.client.drive.exportTask.create({
+      data: {
+        file_extension: format,
+        token: appToken,
+        type: 'bitable',
+      } as any,
+    }, opts);
+    if (createRes.code !== 0) {
+      throwFeishuError('创建导出任务失败', createRes.code, createRes.msg);
+    }
+    const ticket = createRes.data?.ticket;
+    if (!ticket) throw new Error('导出任务未返回 ticket');
+
+    // ② 轮询任务结果（最多 ~30s）
+    let fileToken: string | undefined;
+    let fileName: string | undefined;
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const getRes = await this.client.drive.exportTask.get({
+        path: { ticket },
+        params: { token: appToken },
+      }, opts);
+      if (getRes.code !== 0) {
+        throwFeishuError('查询导出任务失败', getRes.code, getRes.msg);
+      }
+      const result = getRes.data?.result;
+      const status = result?.job_status;
+      if (status === 1) {
+        fileToken = result?.file_token;
+        fileName = result?.file_name;
+        break;
+      }
+      if (status === 2) {
+        throw new Error(`导出失败：${result?.job_error_msg || '未知错误'}`);
+      }
+      // status === 0 → 处理中，继续轮询
+    }
+    if (!fileToken) throw new Error('导出超时，请稍后重试');
+
+    // ③ 下载导出文件
+    const dl = await this.client.drive.exportTask.download({
+      path: { file_token: fileToken },
+    }, opts);
+    const stream = dl.getReadableStream();
+    const buffer = await new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
+
+    return {
+      buffer,
+      fileName: fileName || `bitable_export.${format}`,
+      fileExtension: format,
+    };
+  }
+
   // ====== IM 消息 API ======
 
   /**

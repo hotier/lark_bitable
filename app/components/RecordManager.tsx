@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History } from 'lucide-react';
 import type { Field, FieldType, BitableRecord } from '@/types';
+import { exportBitable } from '@/lib/api';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 
 const TYPE_LABELS: Record<FieldType, string> = {
@@ -491,7 +492,7 @@ function AttachmentsCell({
 }
 
 export default function RecordManager({
-  appToken: _appToken,
+  appToken,
   tableId: _tableId,
   fields,
   records,
@@ -515,6 +516,8 @@ export default function RecordManager({
   const [showForm, setShowForm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<{ type: 'error'; text: string } | null>(null);
 
   // 放大（全屏）模式下按 Esc 退出
   useEffect(() => {
@@ -538,7 +541,7 @@ export default function RecordManager({
     return map;
   }, [fields]);
 
-  if (!_appToken || !_tableId) {
+  if (!appToken || !_tableId) {
     return <NoTableSelected onSwitchToTables={onSwitchToTables} />;
   }
 
@@ -578,6 +581,32 @@ export default function RecordManager({
             >
               + 新增记录
             </button>
+          )}
+
+          {/* 导出整个多维表格为 Excel */}
+          <button
+            onClick={async () => {
+              if (exporting || !appToken) return;
+              setExporting(true);
+              setExportMsg(null);
+              try {
+                await exportBitable(appToken, 'xlsx');
+              } catch (err) {
+                setExportMsg({ type: 'error', text: `导出失败：${err instanceof Error ? err.message : '未知错误'}` });
+                setTimeout(() => setExportMsg(null), 5000);
+              } finally {
+                setExporting(false);
+              }
+            }}
+            disabled={exporting}
+            title="导出整个多维表格为 Excel"
+            className="px-3 py-2 text-sm rounded-md border transition-colors disabled:opacity-50"
+            style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
+          >
+            {exporting ? '导出中…' : '⬇ 导出'}
+          </button>
+          {exportMsg && (
+            <span className="text-xs text-red-500">{exportMsg.text}</span>
           )}
 
           {/* 放大 / 关闭表格 */}

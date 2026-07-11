@@ -25,6 +25,45 @@ import type {
 
 const API_URL = '/api/bitable';
 
+/**
+ * 导出整个多维表格为 Excel/CSV 并触发浏览器下载。
+ * 调用 /api/bitable/export 拿到文件流，按响应头中的文件名落地。
+ */
+export async function exportBitable(appToken: string, format: 'xlsx' | 'csv' = 'xlsx'): Promise<void> {
+  const res = await fetch('/api/bitable/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appToken, format }),
+    credentials: 'include',
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({} as { error?: string }));
+    throw new Error(err.error || `导出失败 (${res.status})`);
+  }
+
+  // 从 Content-Disposition 解析文件名（兼容 filename*=UTF-8'' 与 filename="..."）
+  const cd = res.headers.get('Content-Disposition') || '';
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  const quoted = cd.match(/filename="([^"]+)"/i);
+  let fileName = `bitable_export.${format}`;
+  if (star) {
+    try { fileName = decodeURIComponent(star[1]); } catch { fileName = star[1]; }
+  } else if (quoted) {
+    fileName = quoted[1];
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ====== 模块级缓存：避免页面切换时重复请求 ======
 // 采用「会话内缓存 + 事件失效」策略：不设置明确过期时间，
 // 缓存仅在整页刷新时清空（内存存储，非 localStorage）。
