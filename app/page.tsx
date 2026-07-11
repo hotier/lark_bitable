@@ -107,8 +107,8 @@ export default function RootPage() {
       addToast(
         auth === 'denied' ? 'warning' : 'error',
         auth === 'denied'
-          ? '已取消飞书授权，你可以随时点击下方「飞书授权登录」重新授权。'
-          : (params.get('msg') ?? '飞书授权失败，请重试。'),
+          ? '已取消飞书授权'
+          : (params.get('msg') ?? '飞书授权失败'),
       );
       window.history.replaceState({}, '', window.location.pathname);
     }
