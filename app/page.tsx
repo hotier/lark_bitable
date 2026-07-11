@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap } from 'lucide-react';
+import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap, ShieldAlert, AlertTriangle, X } from 'lucide-react';
 import { fetchOAuthUrl, checkAuthStatus, logout as apiLogout } from '@/lib/api';
 import { ANIM_STYLES } from '@/lib/animations';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
@@ -85,6 +85,19 @@ export default function RootPage() {
 
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
+  // OAuth 回调带回的授权结果（拒绝/失败）提示
+  const [authNotice, setAuthNotice] = useState<{ type: 'denied' | 'error'; msg?: string } | null>(null);
+
+  // 读取 URL 中的 ?auth= 标识，展示友好提示并清理地址栏，避免刷新重复弹出
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const auth = params.get('auth');
+    if (auth === 'denied' || auth === 'error') {
+      setAuthNotice({ type: auth, msg: params.get('msg') ?? undefined });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
   const handleLogout = useCallback(async () => {
     await apiLogout();
     setIsAuthenticated(false);
@@ -114,6 +127,36 @@ export default function RootPage() {
   return (
     <div className="min-h-screen flex flex-col relative overflow-hidden" style={{ background: 'var(--page-bg)' }}>
       <style>{ANIM_STYLES}</style>
+
+      {/* OAuth 授权结果提示（用户拒绝 / 授权失败） */}
+      {authNotice && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[min(92vw,440px)] animate-fade-in">
+          <div className={`flex items-start gap-3 px-4 py-3 rounded-2xl shadow-xl ring-1 backdrop-blur-md ${authNotice.type === 'denied' ? 'bg-amber-50/95 ring-amber-200 text-amber-800' : 'bg-red-50/95 ring-red-200 text-red-800'}`}>
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-white/70">
+              {authNotice.type === 'denied'
+                ? <ShieldAlert className="w-4 h-4 text-amber-500" />
+                : <AlertTriangle className="w-4 h-4 text-red-500" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">
+                {authNotice.type === 'denied' ? '已取消飞书授权' : '飞书授权失败'}
+              </p>
+              <p className="text-xs mt-0.5 leading-relaxed opacity-80">
+                {authNotice.type === 'denied'
+                  ? '你没有完成授权，可随时点击下方「飞书授权登录」重新授权。'
+                  : (authNotice.msg || '授权过程中出现问题，请重试。')}
+              </p>
+            </div>
+            <button
+              onClick={() => setAuthNotice(null)}
+              className="shrink-0 text-current/60 hover:text-current transition-colors p-1"
+              aria-label="关闭提示"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 未登录时无固定顶栏，右上角浮动主题切换 */}
       {!isAuthenticated && (

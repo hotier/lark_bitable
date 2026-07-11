@@ -16,9 +16,17 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const code = searchParams.get('code');
+    const error = searchParams.get('error');
+    const errorDescription = searchParams.get('error_description');
 
+    // 用户拒绝授权 / 飞书返回错误：重定向回首页并带上标识，
+    // 由前端展示友好提示（而非直接抛出 400 JSON 错误页）。
     if (!code) {
-      return NextResponse.json({ error: '缺少 code 参数' }, { status: 400 });
+      const redirect = new URL('/', request.url);
+      const reason = error === 'access_denied' ? 'denied' : 'error';
+      redirect.searchParams.set('auth', reason);
+      if (errorDescription) redirect.searchParams.set('msg', errorDescription);
+      return NextResponse.redirect(redirect);
     }
 
     // 1. 用飞书返回的 code 换取 user_access_token（飞书 token 仅存服务端，不进入 Cookie 语义）
