@@ -110,7 +110,7 @@ export default function FlowPage() {
 
   const handleLogout = useCallback(async () => {
     await apiLogout();
-    window.location.replace('');
+    window.location.replace('/');
   }, []);
 
   // 新建工作流

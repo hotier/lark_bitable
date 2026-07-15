@@ -114,7 +114,7 @@ export default function SheetsPage() {
           } finally {
             setIsLoading(false);
           }
-        }} onLogout={async () => { await apiLogout(); invalidateSheetsCache(); setFiles([]); window.location.replace(''); }}
+        }} onLogout={async () => { await apiLogout(); invalidateSheetsCache(); setFiles([]); window.location.replace('/'); }}
       >
         <div className="flex items-center gap-3">
           <Grid3X3 className="w-5 h-5 text-green-500" />

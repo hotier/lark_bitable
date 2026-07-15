@@ -136,9 +136,12 @@ function scheduleBgRefresh(key: string, run: () => Promise<void>): void {
 
 // ====== OAuth 授权 ======
 
-/** 获取飞书 OAuth 授权 URL */
-export async function fetchOAuthUrl(): Promise<string> {
-  const data = await request<OAuthUrlData>({ action: 'getOAuthUrl' });
+/** 登录前访问的受保护路径，存于 sessionStorage，登录后回跳 */
+export const POST_LOGIN_REDIRECT_KEY = 'postLoginRedirect';
+
+/** 获取飞书 OAuth 授权 URL（可选 state，用于登录后回跳原页面） */
+export async function fetchOAuthUrl(state?: string): Promise<string> {
+  const data = await request<OAuthUrlData>({ action: 'getOAuthUrl', ...(state ? { state } : {}) });
   return data.url;
 }
 

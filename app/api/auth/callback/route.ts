@@ -30,8 +30,14 @@ export async function GET(request: Request) {
     const redirectUri = `${callbackUrl.origin}${callbackUrl.pathname}`;
     const result = await feishuService.getUserAccessToken(code, redirectUri);
 
-    // 2. 重定向到首页，同时设置 HttpOnly Cookie
-    const response = NextResponse.redirect(new URL('', request.url));
+    // 2. 重定向：优先回跳登录前访问的页面（state 携带），否则回首页。
+    //    仅允许同源相对路径，禁止 `//` 协议相对或完整 URL，防止开放重定向。
+    const postLogin = searchParams.get('state');
+    const safeTarget =
+      postLogin && postLogin.startsWith('/') && !postLogin.startsWith('//')
+        ? postLogin
+        : '/';
+    const response = NextResponse.redirect(new URL(safeTarget, request.url));
 
     const expireMs = Date.now() + SESSION_MAX_AGE * 1000;
     const cookieOpts = {

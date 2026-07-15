@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap } from 'lucide-react';
-import { fetchOAuthUrl, checkAuthStatus, logout as apiLogout } from '@/lib/api';
+import { fetchOAuthUrl, checkAuthStatus, logout as apiLogout, POST_LOGIN_REDIRECT_KEY } from '@/lib/api';
 import { ANIM_STYLES } from '@/lib/animations';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 import Toast from '@/app/components/Toast';
@@ -76,9 +76,22 @@ export default function RootPage() {
     const init = async () => {
       // Token 已在 OAuth 回调时直接写入 HttpOnly Cookie，此处只需检查
       const authed = await checkAuthStatus();
-      if (authed) setIsAuthenticated(true);
 
-      fetchOAuthUrl().then(setOauthUrl).catch(console.error);
+      // 读取登录前的回跳目标（仅在未登录时用于生成带 state 的授权链接）
+      let redirectTarget: string | undefined;
+      try {
+        redirectTarget = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY) || undefined;
+      } catch { /* 忽略 */ }
+
+      if (authed) {
+        setIsAuthenticated(true);
+        // 已登录则清除回跳记录，避免残留过期目标
+        try { sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY); } catch { /* 忽略 */ }
+      }
+
+      fetchOAuthUrl(authed ? undefined : redirectTarget)
+        .then(setOauthUrl)
+        .catch(console.error);
       setChecking(false);
       setTimeout(() => setRevealed(true), 60);
     };

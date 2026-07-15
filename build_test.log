@@ -1,0 +1,54 @@
+
+> larksuite@0.1.0 build
+> next build
+
+▲ Next.js 16.2.9 (Turbopack)
+- Environments: .env
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 37.4s
+  Running TypeScript ...
+  Finished TypeScript in 9.1s ...
+  Collecting page data using 11 workers ...
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+[info]: [ 'client ready' ]
+  Generating static pages using 11 workers (0/16) ...
+[info]: [ 'client ready' ]
+  Generating static pages using 11 workers (4/16) 
+  Generating static pages using 11 workers (8/16) 
+  Generating static pages using 11 workers (12/16) 
+✓ Generating static pages using 11 workers (16/16) in 845ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/auth/callback
+├ ƒ /api/executions
+├ ƒ /api/feishu
+├ ƒ /api/feishu/export
+├ ƒ /api/feishu/files/download
+├ ƒ /api/feishu/files/preview
+├ ƒ /api/feishu/files/token
+├ ƒ /api/feishu/keepalive
+├ ƒ /api/trigger-webhook/[id]
+├ ƒ /api/workflows
+├ ƒ /api/workflows/list
+├ ○ /bitable
+├ ○ /docs
+├ ○ /flow
+├ ƒ /flow/[id]
+├ ○ /icon.svg
+├ ƒ /p/[token]
+└ ○ /sheets
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

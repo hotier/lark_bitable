@@ -67,7 +67,9 @@ export async function POST(request: NextRequest) {
       const proto = request.headers.get('x-forwarded-proto') || 'http';
       const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || 'localhost:3000';
       const redirectUri = `${proto}://${host}/api/auth/callback`;
-      return okResponse({ url: feishuService.getOAuthUrl(undefined, redirectUri) });
+      // 透传登录前访问路径作为 state，回调时原样返回用于回跳
+      const state = typeof body.state === 'string' && body.state ? body.state : undefined;
+      return okResponse({ url: feishuService.getOAuthUrl(state, redirectUri) });
     }
 
     /* 检查认证状态（exchangeAuthCode 现等同于 authStatus，向后兼容） */

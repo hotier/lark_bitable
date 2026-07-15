@@ -154,7 +154,7 @@ export default function DashboardPage() {
   const handleLogout = async () => {
     await apiLogout();
     invalidateAppsCache();
-    window.location.replace('');
+    window.location.replace('/');
   };
 
   const handleListApps = useCallback(() => {
