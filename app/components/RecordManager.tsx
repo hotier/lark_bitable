@@ -311,7 +311,12 @@ function FieldInput({
   );
 }
 
-type FeishuAttachment = { file_token?: string; name?: string; type?: string; size?: number };
+type FeishuAttachment = { file_token?: string; token?: string; name?: string; type?: string; size?: number };
+
+/** 兼容飞书附件字段两种键名：记录字段多为 token，drive 接口用 file_token */
+function getFileToken(f: FeishuAttachment): string | undefined {
+  return f.file_token || f.token;
+}
 
 /** 附件单元格：获取加密短 token，展示为可点击超链接 */
 function AttachmentsCell({
@@ -342,7 +347,7 @@ function AttachmentsCell({
     if (!Array.isArray(value) || value.length === 0) return;
 
     const files = value as FeishuAttachment[];
-    const validFiles = files.filter((f) => f.file_token);
+    const validFiles = files.filter((f) => getFileToken(f));
     if (validFiles.length === 0) return;
 
     fetchedRef.current = true;
@@ -355,7 +360,7 @@ function AttachmentsCell({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              file_token: file.file_token,
+              file_token: getFileToken(file),
               table_id: tableId,
               field_id: fieldId,
               record_id: recordId,
@@ -364,7 +369,7 @@ function AttachmentsCell({
           });
           if (!res.ok) return null;
           const data = await res.json();
-          return { key: file.file_token!, token: data.id as string };
+          return { key: getFileToken(file)!, token: data.id as string };
         } catch {
           return null;
         }
@@ -385,9 +390,9 @@ function AttachmentsCell({
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
       {files.map((file, i) => {
-        const ft = file.file_token || `__idx_${i}`;
-        const name = file.name || file.file_token || '?';
-        const token = file.file_token ? tokens[file.file_token] : undefined;
+        const ft = getFileToken(file) || `__idx_${i}`;
+        const name = file.name || getFileToken(file) || '?';
+        const token = getFileToken(file) ? tokens[getFileToken(file)!] : undefined;
         const previewUrl = token ? `/p/${encodeURIComponent(token)}` : null;
 
         return (

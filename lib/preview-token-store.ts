@@ -10,13 +10,13 @@
  * - 清理策略：DB 清理收敛到 loadFromDb（每次冷启动执行一次，先删后查）
  * - 去重加速：fileToken → id 的额外映射表 O(1) 查找
  *
- * TTL：30 分钟（与飞书临时下载链接保持一致）
+ * TTL：24 小时（与飞书临时下载链接有效期保持一致，避免用户停留页面稍久后点击附件即 404）
  */
 
 import crypto from 'crypto';
 import { sql } from '@/lib/db';
 
-const TTL_MS = 30 * 60 * 1000; // 30 分钟
+const TTL_MS = 24 * 60 * 60 * 1000; // 24 小时，与飞书临时下载链接有效期一致
 
 export interface TokenEntry {
   fileToken: string;
@@ -108,6 +108,30 @@ function cleanExpired(): void {
   }
 }
 
+// ── DB 单条回源（内存未命中时使用）──
+
+async function getEntryFromDb(id: string): Promise<TokenEntry | null> {
+  try {
+    const rows = await sql()`
+      SELECT id, file_token, table_id, field_id, record_id, file_name, created_at
+      FROM preview_tokens WHERE id = ${id}
+    `;
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      fileToken: r.file_token as string,
+      tableId: (r.table_id as string) || undefined,
+      fieldId: (r.field_id as string) || undefined,
+      recordId: (r.record_id as string) || undefined,
+      fileName: r.file_name as string,
+      createdAt: Number(r.created_at),
+    };
+  } catch (err) {
+    console.error('[preview-token-store] 从数据库读取失败:', err);
+    return null;
+  }
+}
+
 // ── 公开 API ──
 
 /**
@@ -128,10 +152,13 @@ export async function savePreviewToken(params: Omit<TokenEntry, 'createdAt'>): P
   store!.set(id, entry);
   fileTokenIndex?.set(params.fileToken, id);
 
-  // 异步写 DB（fire-and-forget，不阻塞返回）
-  saveEntryToDb(id, entry).catch((err) =>
-    console.error('[preview-token-store] 写入数据库失败:', err)
-  );
+  // 同步写 DB，确保短 ID 在返回前已持久化，
+  // 避免后续跨实例访问预览时（本实例内存里没有）查不到。
+  try {
+    await saveEntryToDb(id, entry);
+  } catch (err) {
+    console.error('[preview-token-store] 写入数据库失败:', err);
+  }
 
   return id;
 }
@@ -144,13 +171,25 @@ export async function savePreviewToken(params: Omit<TokenEntry, 'createdAt'>): P
 export async function getPreviewToken(id: string): Promise<TokenEntry | null> {
   await ensureStore();
   const entry = store?.get(id);
-  if (!entry) return null;
-
-  if (Date.now() - entry.createdAt > TTL_MS) {
-    store?.delete(id);
-    fileTokenIndex?.delete(entry.fileToken);
-    return null;
+  if (entry) {
+    if (Date.now() - entry.createdAt > TTL_MS) {
+      store?.delete(id);
+      fileTokenIndex?.delete(entry.fileToken);
+      return null;
+    }
+    return entry;
   }
 
-  return entry;
+  // 内存未命中：回源 DB（跨实例场景，或本实例冷启动后才新增的条目）
+  const dbEntry = await getEntryFromDb(id);
+  if (!dbEntry) return null;
+
+  store?.set(id, dbEntry);
+  fileTokenIndex?.set(dbEntry.fileToken, id);
+  if (Date.now() - dbEntry.createdAt > TTL_MS) {
+    store?.delete(id);
+    fileTokenIndex?.delete(dbEntry.fileToken);
+    return null;
+  }
+  return dbEntry;
 }
