@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap } from 'lucide-react';
+import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap, AlertTriangle } from 'lucide-react';
 import { fetchOAuthUrl, checkAuthStatus, logout as apiLogout, POST_LOGIN_REDIRECT_KEY } from '@/lib/api';
+import { useFeishuConnection } from '@/lib/useFeishuConnection';
 import { ANIM_STYLES } from '@/lib/animations';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 import Toast from '@/app/components/Toast';
@@ -71,6 +72,8 @@ export default function RootPage() {
   const [oauthUrl, setOauthUrl] = useState('');
   const [checking, setChecking] = useState(true);
   const [revealed, setRevealed] = useState(false);
+  // 真实飞书连接状态（取数能力）：false = 飞书 token 失效，需重新授权
+  const feishuConnected = useFeishuConnection();
 
   useEffect(() => {
     const init = async () => {
@@ -200,13 +203,24 @@ export default function RootPage() {
             </div>
             <div className="flex items-center gap-4">
               <ThemeToggle />
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50/80 border border-emerald-200/50">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-                </span>
-                <span className="text-xs font-semibold text-emerald-700">已连接飞书</span>
-              </div>
+              {feishuConnected === false ? (
+                <a
+                  href={oauthUrl}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-50/80 border border-amber-200/60 transition-all duration-200 hover:bg-amber-100/80"
+                  title="飞书连接已失效，点击重新授权"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                  <span className="text-xs font-semibold text-amber-700">飞书连接已失效 · 重新授权</span>
+                </a>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50/80 border border-emerald-200/50">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </span>
+                  <span className="text-xs font-semibold text-emerald-700">已连接飞书</span>
+                </div>
+              )}
               <button
                 onClick={() => setShowLogoutConfirm(true)}
                 className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200"

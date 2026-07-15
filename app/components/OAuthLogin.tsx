@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { LogOut } from 'lucide-react';
+import { LogOut, AlertTriangle } from 'lucide-react';
 import ConfirmDialog from './ConfirmDialog';
+import { useFeishuConnection } from '@/lib/useFeishuConnection';
 
 interface OAuthLoginProps {
   isAuthenticated: boolean;
@@ -17,6 +18,8 @@ export default function OAuthLogin({
   isAuthenticated, oauthUrl, isLoading, onFetchApps, onLogout, hideLogin = false,
 }: OAuthLoginProps) {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  // 真实飞书连接状态（取数能力），由 authStatus 校验结果驱动
+  const feishuConnected = useFeishuConnection();
 
   if (!isAuthenticated && hideLogin) return null;
 
@@ -32,6 +35,45 @@ export default function OAuthLogin({
         </svg>
         飞书授权登录
       </a>
+    );
+  }
+
+  // 飞书连接已失效（会话还在，但飞书 token 无法恢复，如 refresh_token 过期）
+  // → 显示告警态，点击重新授权。
+  if (feishuConnected === false) {
+    return (
+      <div className="flex items-center gap-4">
+        <a
+          href={oauthUrl}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-50/80 border border-amber-200/60 transition-all duration-200 hover:bg-amber-100/80"
+          title="飞书连接已失效，点击重新授权"
+        >
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+          <span className="text-xs font-semibold text-amber-700">飞书连接已失效 · 重新授权</span>
+        </a>
+
+        <button
+          onClick={() => setShowLogoutConfirm(true)}
+          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200"
+        >
+          <LogOut className="w-3 h-3" />
+          退出登录
+        </button>
+
+        <ConfirmDialog
+          open={showLogoutConfirm}
+          title="退出登录"
+          message="确定要退出登录吗？退出后需要重新授权才能访问飞书数据。"
+          confirmLabel="退出登录"
+          cancelLabel="取消"
+          variant="danger"
+          onConfirm={async () => {
+            await onLogout();
+            setShowLogoutConfirm(false);
+          }}
+          onCancel={() => setShowLogoutConfirm(false)}
+        />
+      </div>
     );
   }
 

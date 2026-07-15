@@ -207,15 +207,12 @@ function NodeListView() {
                         key={key}
                         draggable
                         onDragStart={(e) => handleDragStart(e, item.kind, item.actionType)}
-                        className={`flex items-center gap-2 p-2 rounded-lg border cursor-grab active:cursor-grabbing transition-all hover:shadow-sm ${item.bg} ${item.border}`}
+                        className="flex items-center gap-2.5 p-2 rounded-lg border border-neutral-200 bg-white cursor-grab active:cursor-grabbing transition-all hover:border-neutral-300 hover:shadow-sm dark:bg-neutral-800 dark:border-neutral-700 dark:hover:border-neutral-600"
                       >
-                        <div className={`w-6 h-6 rounded flex items-center justify-center flex-shrink-0 ${item.bg}`}>
-                          <Icon className={`w-3 h-3 ${item.color}`} />
+                        <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 ${item.bg}`}>
+                          <Icon className={`w-3.5 h-3.5 ${item.color}`} />
                         </div>
-                        <div className="min-w-0">
-                          <div className={`text-[11px] font-medium ${item.color}`}>{item.displayName}</div>
-                          <div className="text-[10px] text-neutral-400 truncate leading-tight dark:text-neutral-500">{item.description}</div>
-                        </div>
+                        <span className="text-[12px] text-neutral-700 font-medium truncate dark:text-neutral-200">{item.displayName}</span>
                       </div>
                     );
                   })}

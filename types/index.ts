@@ -618,6 +618,8 @@ export interface WorkflowNode {
   id: string;
   type: NodeKind;
   title: string;
+  /** 画布坐标（用于按视觉上→下顺序决定执行顺序） */
+  position?: { x: number; y: number };
   /** 触发器配置 */
   triggerConfig?: TriggerConfig;
   /** CRUD 动作配置 */
@@ -670,6 +672,10 @@ export interface WorkflowEdge {
   id: string;
   source: string;
   target: string;
+  /** 源节点出口句柄（分支节点如判断节点用它区分 pass/fail 等出口） */
+  sourceHandle?: string | null;
+  /** 目标节点入口句柄 */
+  targetHandle?: string | null;
 }
 
 /** 工作流 */

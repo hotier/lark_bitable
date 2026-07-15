@@ -37,6 +37,9 @@ function parseFeishuJson(raw: string) {
   return undefined;
 }
 
+/** access_token 剩余小于该阈值时主动续期（毫秒），保持 token 常热、隐藏刷新延迟 */
+const REFRESH_THRESHOLD_MS = 10 * 60 * 1000;
+
 // ====== 飞书字段类型数字 → 字符串映射 ======
 const FIELD_TYPE_MAP: Record<number, FieldType> = {
   1: 'text',
@@ -76,6 +79,11 @@ class FeishuService {
   private userTokenExpireTime = 0;
   private refreshToken: string | null = null;
   private refreshTokenExpireTime = 0;
+
+  /** ensureAuth 并发去重锁：冷路径（DB 加载 / 飞书刷新）同一时刻只执行一次 */
+  private authInFlight: Promise<boolean> | null = null;
+  /** refresh 并发去重锁：避免并发刷新互相使 refresh_token 失效 */
+  private refreshInFlight: Promise<boolean> | null = null;
 
   private appId = process.env.APP_ID || '';
 
@@ -130,9 +138,12 @@ class FeishuService {
     this.userTokenExpireTime = Date.now() + ((data.expires_in || 7200) - 60) * 1000;
     if (data.refresh_token) {
       this.refreshToken = data.refresh_token;
+      // 初始授权：飞书未返回 refresh_expires_in 时回退 7 天默认值
       this.refreshTokenExpireTime =
         Date.now() + ((data.refresh_expires_in || 604800) - 60) * 1000;
     }
+    console.log('[FeishuService] 初始授权 | refresh_expires_in=%s | refresh_token 过期=%s',
+      data.refresh_expires_in ?? '(未返回, 回退 7 天)', new Date(this.refreshTokenExpireTime).toISOString());
 
     // 持久化到文件，确保服务重启后 webhook 继续可用
     await saveToken({
@@ -171,9 +182,14 @@ class FeishuService {
     this.userTokenExpireTime = Date.now() + ((data.expires_in || 7200) - 60) * 1000;
     if (data.refresh_token) {
       this.refreshToken = data.refresh_token;
-      // 飞书可能轮换 refresh_token，重置其过期窗口（默认 7 天，避免被旧窗口误判过期）
-      const rtSeconds = (data as any).refresh_expires_in || 604800;
-      this.refreshTokenExpireTime = Date.now() + (rtSeconds - 60) * 1000;
+      // 飞书可能轮换 refresh_token。仅当响应明确返回 refresh_expires_in 时才重置窗口，
+      // 否则保留现有过期时间——避免刷新响应未携带该字段时被错误缩短为 7 天。
+      const rtSeconds = (data as any).refresh_expires_in;
+      if (typeof rtSeconds === 'number' && rtSeconds > 0) {
+        this.refreshTokenExpireTime = Date.now() + (rtSeconds - 60) * 1000;
+      }
+      console.log('[FeishuService] 刷新成功 | refresh_expires_in=%s | 新 refresh_token 过期=%s',
+        rtSeconds ?? '(未返回, 沿用原过期时间)', new Date(this.refreshTokenExpireTime).toISOString());
     }
 
     // 刷新后持久化新的 token 到文件
@@ -221,15 +237,35 @@ class FeishuService {
   }
 
   /**
-   * 确保用户 token 可用（供 webhook 调用）
-   * - access_token 有效 → 直接返回 true
+   * 确保用户 token 可用（供 webhook 调用），并尽量保持「常热」以实现自动续期：
+   * - access_token 有效 → 直接返回 true；临期（<REFRESH_THRESHOLD_MS）时后台主动刷新
    * - 冷启动无缓存 → 从数据库恢复 token
    * - access_token 过期但 refresh_token 有效 → 自动刷新后返回 true
-   * - 都无效 → 返回 false
+   * - refresh_token 也已过期 → 返回 false（需用户重新授权）
+   *
+   * 热路径（内存 token 有效）零 IO、瞬时返回；冷路径（可能查 DB / 调飞书）加锁去重，
+   * 避免并发请求重复触发慢速的 ensureAuth。
    */
   async ensureAuth(): Promise<boolean> {
-    if (this.isUserAuthenticated()) return true;
+    // 热路径：内存 access_token 仍有效 → 直接通过，临期时后台主动续期
+    if (this.isUserAuthenticated()) {
+      if (this.userTokenExpireTime - Date.now() < REFRESH_THRESHOLD_MS) {
+        void this.triggerRefresh();
+      }
+      return true;
+    }
 
+    // 冷路径：可能要查 DB / 调飞书刷新，加锁去重，避免并发重复慢操作
+    if (!this.authInFlight) {
+      this.authInFlight = this.doEnsureAuth().finally(() => {
+        this.authInFlight = null;
+      });
+    }
+    return this.authInFlight;
+  }
+
+  /** ensureAuth 的实际逻辑（冷路径：内存 token 已失效时执行） */
+  private async doEnsureAuth(): Promise<boolean> {
     // 冷启动兜底：内存缓存为空时从数据库恢复 token
     if (!this.userAccessToken && !this.refreshToken) {
       try {
@@ -261,18 +297,35 @@ class FeishuService {
     }
 
     // access_token 过期，尝试用 refresh_token 刷新
-    if (this.refreshToken && Date.now() < this.refreshTokenExpireTime) {
-      try {
-        console.log('[FeishuService] access_token 过期，尝试自动刷新...');
-        await this.refreshUserAccessToken();
-        console.log('[FeishuService] 自动刷新成功');
-        return true;
-      } catch (err) {
-        console.error('[FeishuService] 自动刷新失败:', err);
-      }
-    }
+    return this.triggerRefresh();
+  }
 
-    return false;
+  /**
+   * 触发 refresh_token 刷新（并发去重）。
+   * refresh_token 有效则刷新成功返回 true；已过期或失败返回 false。
+   * 多个并发调用共享同一次刷新结果，避免并发刷新互相让 refresh_token 失效。
+   */
+  private triggerRefresh(): Promise<boolean> {
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = this.tryRefresh().finally(() => {
+        this.refreshInFlight = null;
+      });
+    }
+    return this.refreshInFlight;
+  }
+
+  /** 实际执行刷新；refresh_token 无效/失败时返回 false（不抛异常） */
+  private async tryRefresh(): Promise<boolean> {
+    if (!this.refreshToken || Date.now() >= this.refreshTokenExpireTime) return false;
+    try {
+      console.log('[FeishuService] access_token 过期/临期，尝试自动刷新...');
+      await this.refreshUserAccessToken();
+      console.log('[FeishuService] 自动刷新成功');
+      return true;
+    } catch (err) {
+      console.error('[FeishuService] 自动刷新失败（refresh_token 可能已过期，需重新授权）:', err);
+      return false;
+    }
   }
 
   // ====== OAuth ======
@@ -314,34 +367,10 @@ class FeishuService {
 
   /**
    * 获取当前有效的用户 access_token（供代理下载等场景使用）
-   * 会尝试从数据库恢复（冷启动兜底）并自动刷新
+   * 复用 ensureAuth 的「内存 → DB → 刷新」链路与并发去重，确保自动续期逻辑一致
    */
   async getValidAccessToken(): Promise<string | null> {
-    if (this.isUserAuthenticated()) return this.userAccessToken;
-
-    // 冷启动兜底
-    if (!this.userAccessToken && !this.refreshToken) {
-      try {
-        const stored = await reloadToken();
-        if (stored) {
-          this.userAccessToken = stored.accessToken;
-          this.userTokenExpireTime = stored.accessTokenExpireAt;
-          this.refreshToken = stored.refreshToken;
-          this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-          if (Date.now() < stored.accessTokenExpireAt) return this.userAccessToken;
-        }
-      } catch { /* 继续尝试刷新 */ }
-    }
-
-    if (this.refreshToken && Date.now() < this.refreshTokenExpireTime) {
-      try {
-        await this.refreshUserAccessToken();
-        return this.userAccessToken;
-      } catch (err) {
-        console.error('[FeishuService] getValidAccessToken 自动刷新失败:', err);
-      }
-    }
-    return null;
+    return (await this.ensureAuth()) ? this.userAccessToken : null;
   }
 
   /** 获取素材临时下载链接（24小时有效，支持高级权限表格） */

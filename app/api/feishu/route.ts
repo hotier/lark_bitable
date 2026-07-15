@@ -7,6 +7,13 @@ import { validateApiBody } from '@/lib/validation';
 import { okResponse, errorResponse } from '@/lib/api-response';
 import { TOKEN_COOKIE, EXPIRE_COOKIE, SESSION_MAX_AGE } from '@/lib/auth-constants';
 
+/**
+ * 认证失败负缓存：同一失效 token 在窗口内只做一次昂贵的 ensureAuth
+ * （冷启动 DB 查询 + 飞书刷新可能耗数秒），避免连续请求反复触发慢速 401。
+ */
+const authFailCache = new Map<string, number>();
+const AUTH_FAIL_TTL = 30 * 1000;
+
 /** 从 request cookies 中读取 token 信息 */
 function getTokenFromCookies(request: NextRequest): { accessToken: string | null; expire: number } {
   const token = request.cookies.get(TOKEN_COOKIE)?.value || null;
@@ -72,20 +79,25 @@ export async function POST(request: NextRequest) {
       return okResponse({ url: feishuService.getOAuthUrl(state, redirectUri) });
     }
 
-    /* 检查认证状态（exchangeAuthCode 现等同于 authStatus，向后兼容） */
+    /* 检查认证状态（exchangeAuthCode 现等同于 authStatus，向后兼容）
+     * 返回两个维度：
+     * - authenticated：Cookie 会话是否仍有效（决定「是否登录」）
+     * - feishuConnected：服务端飞书 token 是否真正可用（决定「能否取数」）
+     * 二者解耦——会话可能还在 30 天有效期内，但飞书 refresh_token 已过期，
+     * 此时 authenticated=true 而 feishuConnected=false，前端据此显示「飞书连接已失效」，
+     * 而非误导性的「已连接飞书」。 */
     if (action === 'exchangeAuthCode' || action === 'authStatus') {
       const { accessToken, expire } = getTokenFromCookies(request);
-      // 会话（Cookie）为登录权威来源：存在且未过期即视为已登录。
-      // ensureAuth() 仅用于在判定前「尽力」恢复/刷新服务端飞书 token
-      // （冷启动从 DB 兜底），其失败（如 DB 不可用）只代表暂时无法恢复
-      // 飞书 token，不应据此把有效会话判为未登录。
       const sessionValid = accessToken !== null && Date.now() < expire;
-      if (sessionValid) {
-        feishuService.ensureAuth().catch(() => {
-          /* 忽略：DB 不可达时仅暂时无法恢复飞书 token，不影响会话有效性 */
-        });
+      if (!sessionValid) {
+        return NextResponse.json({ success: true, data: { authenticated: false, feishuConnected: false } });
       }
-      return NextResponse.json({ success: true, data: { authenticated: sessionValid } });
+      // 真实取数能力：恢复/刷新服务端飞书 token（DB 兜底 + 主动续期 + 并发去重）
+      const connected = await feishuService.ensureAuth();
+      return NextResponse.json({
+        success: true,
+        data: { authenticated: true, feishuConnected: connected },
+      });
     }
 
     /* 登出 */
@@ -109,11 +121,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 负缓存：近期已确认该 token 无法恢复，直接快速返回 401，
+    // 避免对同一个失效会话反复执行慢速的 ensureAuth（DB 冷连接 + 飞书刷新）。
+    const lastFail = authFailCache.get(cookieToken);
+    if (lastFail && Date.now() - lastFail < AUTH_FAIL_TTL) {
+      return NextResponse.json(
+        { success: false, error: '登录已失效，请重新授权', needLogin: true },
+        { status: 401 },
+      );
+    }
+
     // 让服务端用 DB / refresh_token 自动维护有效飞书 token，
     // 不再用 Cookie 里可能已过期的 access_token 回填。
     const authed = await feishuService.ensureAuth();
     if (!authed) {
-      return errorResponse('登录已失效，请重新授权', 401, { needLogin: true });
+      // 飞书 token 已无法恢复（refresh_token 过期等）：清除失效会话 Cookie，
+      // 让前端 authStatus 立即判定为未登录并引导重新授权，避免反复发起注定失败的请求。
+      authFailCache.set(cookieToken, Date.now());
+      const response = errorResponse('登录已失效，请重新授权', 401, { needLogin: true });
+      clearAuthCookies(response);
+      return response;
     }
 
     const uaToken: string | null = null; // 统一走服务端托管 token
@@ -271,13 +298,19 @@ export async function POST(request: NextRequest) {
     }
 
     const response = okResponse(result);
-    // 滑动续期：活跃用户每次成功请求都刷新会话到期时间（直至 refresh_token 窗口）
-    response.cookies.set(EXPIRE_COOKIE, String(Date.now() + SESSION_MAX_AGE * 1000), {
+    // 滑动续期：活跃用户每次成功请求都刷新会话到期时间（最长 30 天）。
+    // TOKEN_COOKIE 与 EXPIRE_COOKIE 同时续期，保证 30 天登录态随活跃使用自动延长。
+    const slideOpts = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const,
       path: '/',
-    });
+      maxAge: SESSION_MAX_AGE,
+    };
+    response.cookies.set(EXPIRE_COOKIE, String(Date.now() + SESSION_MAX_AGE * 1000), slideOpts);
+    if (cookieToken) {
+      response.cookies.set(TOKEN_COOKIE, cookieToken, slideOpts);
+    }
     return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误';

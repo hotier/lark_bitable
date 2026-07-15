@@ -4,14 +4,14 @@ import React, { useCallback } from 'react';
 import {
   BaseEdge,
   EdgeLabelRenderer,
-  getBezierPath,
+  getStraightPath,
   type EdgeProps,
   useReactFlow,
 } from '@xyflow/react';
 
 /**
  * 自定义边组件
- * - 贝塞尔曲线，选中时高亮为 indigo
+ * - 直线连线，选中时高亮为 indigo
  * - hover 时显示删除按钮
  */
 export default function CustomEdge({
@@ -20,19 +20,15 @@ export default function CustomEdge({
   sourceY,
   targetX,
   targetY,
-  sourcePosition,
-  targetPosition,
   selected,
   style = {},
   markerEnd,
 }: EdgeProps) {
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getStraightPath({
     sourceX,
     sourceY,
-    sourcePosition,
     targetX,
     targetY,
-    targetPosition,
   });
 
   const { setEdges } = useReactFlow();

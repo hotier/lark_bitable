@@ -39,6 +39,12 @@ const EVENT_LABELS: Record<string, string> = {
 
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
+/** 将存储的相对路径解析为完整 URL（自动跟随当前域名） */
+function resolveWebhookUrl(path: string): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  return path.startsWith('http') ? path : `${origin}${path}`;
+}
+
 /** 将 Cron 表达式转换为易懂的中文描述（用于画布展示） */
 function describeSchedule(cron?: string): string {
   const parts = (cron || '').trim().split(/\s+/);
@@ -63,7 +69,7 @@ export default function TriggerNode({ data, selected }: NodeProps) {
     switch (kind) {
       case 'webhook':
         return nodeData.webhookUrl ? (
-          <span className="font-mono text-blue-500 truncate block">{nodeData.webhookUrl}</span>
+          <span className="font-mono text-blue-500 truncate block">{resolveWebhookUrl(nodeData.webhookUrl)}</span>
         ) : '触发器';
       case 'scheduled':
         return <span className="truncate block">{describeSchedule(nodeData.cronExpression)}</span>;

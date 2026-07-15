@@ -43,7 +43,12 @@ function topologicalSort(nodes: WorkflowNode[], edges: EdgeDef[]): WorkflowNode[
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
   while (queue.length > 0) {
+    // 就绪节点中优先执行画布上更靠上的（y 更小），使「视觉上→下」即执行顺序；
+    // 同时仍受拓扑依赖约束（入度未清零的节点不会被选中）
     queue.sort((a, b) => {
+      const ya = nodeMap.get(a)?.position?.y ?? 0;
+      const yb = nodeMap.get(b)?.position?.y ?? 0;
+      if (ya !== yb) return ya - yb;
       const na = nodeMap.get(a);
       const nb = nodeMap.get(b);
       if (na?.type === 'trigger') return -1;

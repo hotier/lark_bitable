@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  RefreshCw, Search, CheckCircle2, XCircle, Clock, Activity,
-  Calendar, Timer, TrendingUp, ChevronDown, Inbox,
+  RefreshCw, Search, CheckCircle2, XCircle, Clock, BarChart3,
+  Calendar, Hourglass, BadgePercent, ChevronRight, PackageOpen,
 } from 'lucide-react';
 import type { Execution } from '@/types';
 import { fetchExecutions, fetchExecutionById } from '@/lib/executions';
@@ -135,10 +135,10 @@ export default function ExecutionList({ workflowId, compact = false }: { workflo
       {/* 统计卡片 */}
       {!compact && (
         <div className="flex gap-3 px-6 py-4 flex-shrink-0">
-          <StatCard icon={<Activity className="w-4 h-4" />} label="总运行" value={String(total)} accent="#d97706" />
-          <StatCard icon={<TrendingUp className="w-4 h-4" />} label="成功率" value={`${successRate}%`} sub={`${successCount} 成功 / ${failureCount} 失败`} accent="#059669" />
+          <StatCard icon={<BarChart3 className="w-4 h-4" />} label="总运行" value={String(total)} accent="#d97706" />
+          <StatCard icon={<BadgePercent className="w-4 h-4" />} label="成功率" value={`${successRate}%`} sub={`${successCount} 成功 / ${failureCount} 失败`} accent="#059669" />
           <StatCard icon={<Calendar className="w-4 h-4" />} label="今日运行" value={String(todayCount)} accent="#2563eb" />
-          <StatCard icon={<Timer className="w-4 h-4" />} label="平均耗时" value={fmtDuration(avgDuration)} accent="#7c3aed" />
+          <StatCard icon={<Hourglass className="w-4 h-4" />} label="平均耗时" value={fmtDuration(avgDuration)} accent="#7c3aed" />
         </div>
       )}
 
@@ -217,7 +217,7 @@ export default function ExecutionList({ workflowId, compact = false }: { workflo
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-40 text-neutral-400">
-            <Inbox className="w-10 h-10 mb-2 text-neutral-200" />
+            <PackageOpen className="w-10 h-10 mb-2 text-neutral-200" />
             <p className="text-sm">暂无运行日志</p>
             {!workflowId && <p className="text-xs mt-1">启用工作流并发起触发后，运行记录将显示在此</p>}
           </div>
@@ -248,7 +248,7 @@ export default function ExecutionList({ workflowId, compact = false }: { workflo
                     <div className="text-xs text-neutral-600">{fmtDuration(e.durationMs)}</div>
                     <div className="text-[10px] text-neutral-400">{e.stepCount} 步骤</div>
                   </div>
-                  <ChevronDown className="w-4 h-4 text-neutral-300 -rotate-90 flex-shrink-0" />
+                  <ChevronRight className="w-4 h-4 text-neutral-300 flex-shrink-0" />
                 </button>
               );
             })}

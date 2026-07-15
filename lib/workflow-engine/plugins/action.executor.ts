@@ -4,7 +4,6 @@
  * 与 action.plugin.ts 分离以避免客户端 bundle 引入 @larksuiteoapi/node-sdk。
  */
 
-import { createRequire } from 'module';
 import type { WorkflowNode, ExecutionStep } from '@/types';
 import type { ExecutionContext, NodeExecutor } from '../node-registry';
 
@@ -61,12 +60,10 @@ async function resolveFieldValues(
               let ext = 'webp';
               if (mime.startsWith('image/') && mime !== 'image/webp') {
                 try {
-                  // Next 16 Turbopack 会把一切能静态解析出 'sharp' 说明符的
-                  // import/require 调用错误地 external 成 sharp-<hash> 而找不到。
-                  // 用 new Function 隔离加载逻辑，使其成为不透明字符串，
-                  // Turbopack 不静态分析，运行时由 node 直接 require 真实 sharp 包。
-                  const require = createRequire(import.meta.url);
-                  const sharp = new Function('require', 'return require("sharp");')(require);
+                  // sharp 已在 next.config.ts 的 serverExternalPackages 中声明为
+                  // 服务端外部包，打包器不会打包它，运行时由 Node 直接加载，
+                  // 因此可安全使用标准动态 import。
+                  const sharp = (await import('sharp')).default;
                   const base64 = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
                   const webpBuf = await sharp(Buffer.from(base64, 'base64')).webp().toBuffer();
                   uploadDataUrl = `data:image/webp;base64,${webpBuf.toString('base64')}`;
@@ -80,8 +77,15 @@ async function resolveFieldValues(
                 // 非图片（如 pdf）保持原扩展名
                 ext = mime.includes('/') ? mime.split('/')[1] : 'bin';
               }
+              // 文件名：字段名_yyyymmddhhmmss_随机，避免重名且可按时间排序定位
+              // 用北京时间(UTC+8)：toISOString 是 UTC，+8h 抵消时区，避免与本地触发时间错位
+              const ts = new Date(Date.now() + 8 * 60 * 60 * 1000)
+                .toISOString()
+                .replace(/[-:TZ.]/g, '')
+                .slice(0, 14); // 20260715 183045 (北京时间)
+              const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 6);
               const fileToken = await feishuService.uploadFileToBitable({
-                fileName: `${m.fieldName || 'file'}.${ext}`,
+                fileName: `${m.fieldName || 'file'}_${ts}_${rand}.${ext}`,
                 appToken,
                 dataUrl: uploadDataUrl,
               });

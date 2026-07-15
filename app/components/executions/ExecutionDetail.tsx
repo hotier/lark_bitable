@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { X, CheckCircle2, XCircle, Clock, ChevronDown, ChevronRight, Webhook, Zap, Loader2, Table2, Copy } from 'lucide-react';
+import { X, CheckCircle2, XCircle, Clock, ChevronDown, ChevronRight, Webhook, Play, Loader2, Table2, Copy } from 'lucide-react';
 import type { Execution, ExecutionStep, TriggerKind } from '@/types';
 import { TRIGGER_KIND_META } from '@/types';
 
@@ -207,7 +207,7 @@ export default function ExecutionDetail({
           {/* 触发器 + 步骤 时间线 */}
           <section>
             <div className="flex items-center gap-1.5 text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-3">
-              <Zap className="w-3.5 h-3.5" />
+              <Play className="w-3.5 h-3.5" />
               执行过程
             </div>
             {loading && steps.length === 0 ? (

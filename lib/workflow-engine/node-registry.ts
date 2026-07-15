@@ -143,6 +143,11 @@ class NodeRegistry {
     return types;
   }
 
+  /** 返回所有核心节点（trigger / end，不可删除）的 rfType 列表 */
+  getCoreRfTypes(): string[] {
+    return this.plugins.filter((p) => p.isCore).map((p) => p.rfType);
+  }
+
   /** 为 MiniMap 查找节点颜色 */
   getMiniMapColor(rfType: string): string {
     const plugin = this.plugins.find((p) => p.rfType === rfType);

@@ -114,6 +114,11 @@ async function request<T>(body: Record<string, unknown>): Promise<T> {
   const result: ApiResponse<T> & { feishuCode?: number; feishuMsg?: string } = await response.json();
 
   if (!result.success) {
+    // 服务端判定登录已失效（飞书 token 无法恢复）：立即清除本地登录态缓存，
+    // 避免界面停留在「已登录」并反复发起注定失败的请求；下次 authStatus 校验会引导重新授权。
+    if ((result as { needLogin?: boolean }).needLogin) {
+      invalidateAuthCache();
+    }
     let errMsg = result.error || '请求失败';
     if (result.feishuCode !== undefined) {
       errMsg += ` [飞书 ${result.feishuCode}: ${result.feishuMsg || '未知'}]`;
@@ -151,8 +156,32 @@ const AUTH_LS_KEY = 'authStatus';
 const AUTH_LS_TTL = 30 * 24 * 60 * 60 * 1000; // 30 天，与 Cookie 会话寿命一致
 
 // 第二层：会话内内存缓存（瞬时二次命中，避免同一会话内重复解析）
-let authStatusCache: { authenticated: boolean; ts: number } | null = null;
+let authStatusCache: { authenticated: boolean; feishuConnected: boolean; ts: number } | null = null;
 const AUTH_STATUS_TTL = 2 * 60 * 1000;
+
+// 真实飞书连接状态（取数能力）：由 authStatus 校验结果驱动，全局广播给前端 badge。
+// - true：飞书 token 可用，数据接口正常
+// - false：飞书 token 已失效（refresh_token 过期等），需重新授权
+// - null：尚未校验 / 校验中（乐观视为已连接，避免健康用户每次刷新闪烁）
+let feishuConnectedState: boolean | null = null;
+const connectionListeners = new Set<(v: boolean | null) => void>();
+
+/** 读取当前真实飞书连接状态 */
+export function getFeishuConnection(): boolean | null {
+  return feishuConnectedState;
+}
+
+/** 订阅真实飞书连接状态变化，返回取消订阅函数 */
+export function subscribeFeishuConnection(cb: (v: boolean | null) => void): () => void {
+  connectionListeners.add(cb);
+  return () => connectionListeners.delete(cb);
+}
+
+function setFeishuConnected(v: boolean | null): void {
+  if (feishuConnectedState === v) return;
+  feishuConnectedState = v;
+  connectionListeners.forEach((cb) => cb(v));
+}
 
 // 失效代际：每次 invalidateAuthCache（登出/重新授权）自增。
 // 用于防止「后台静默对齐」的过期请求在登出后把 L1 重新写成已登录（竞态）。
@@ -163,6 +192,8 @@ export function invalidateAuthCache() {
   authStatusCache = null;
   clientCacheDel(AUTH_LS_KEY);
   authGeneration++;
+  // 登出/重新授权/收到 needLogin 时，连接状态明确失效，立即广播给前端 badge
+  setFeishuConnected(false);
 }
 
 /**
@@ -173,25 +204,27 @@ export function invalidateAuthCache() {
  */
 export async function checkAuthStatus(force = false): Promise<boolean> {
   // 第一层：浏览器本地（跨刷新持久）
-  const ls = force ? null : clientCacheGet<{ authenticated: boolean }>(AUTH_LS_KEY);
+  const ls = force ? null : clientCacheGet<{ authenticated: boolean; feishuConnected?: boolean }>(AUTH_LS_KEY);
   // ⚠️ 仅当本地记录为「已登录」才短路返回；绝不因 localStorage 中的
   // false 而直接判定未登录（否则 OAuth 回调后会被陈旧 false 锁死首页）。
   if (ls && ls.authenticated) {
-    // 后台静默对齐：不影响本次瞬时返回；若服务端判定会话已失效，
-    // 则把本地缓存更新为 false，保证后续读取一致。
+    // 后台静默对齐：不影响本次瞬时返回；若服务端判定会话已失效或飞书连接断开，
+    // 则更新本地缓存与全局连接状态，保证后续读取一致。
     // 用代际（gen）防止登出后过期的后台请求把 L1 复活为已登录。
     const gen = authGeneration;
-    request<{ authenticated: boolean }>({ action: 'authStatus' })
+    request<{ authenticated: boolean; feishuConnected: boolean }>({ action: 'authStatus' })
       .then((d) => {
         if (gen === authGeneration) {
-          authStatusCache = { authenticated: d.authenticated, ts: Date.now() };
+          authStatusCache = { authenticated: d.authenticated, feishuConnected: d.feishuConnected, ts: Date.now() };
           // 仅当服务端确认已登录时才落盘；false 不持久化，避免污染首页
           if (d.authenticated) {
-            clientCacheSet(AUTH_LS_KEY, { authenticated: true }, AUTH_LS_TTL);
+            clientCacheSet(AUTH_LS_KEY, { authenticated: true, feishuConnected: d.feishuConnected }, AUTH_LS_TTL);
           }
+          // 广播真实连接状态（即使会话仍有效，飞书 token 失效也应让 badge 反映）
+          setFeishuConnected(d.feishuConnected);
         }
       })
-      .catch(() => { /* 网络异常：保持本地缓存不变 */ });
+      .catch(() => { /* 网络异常：保持本地缓存与连接状态不变 */ });
     return ls.authenticated;
   }
   // 第二层：会话内内存
@@ -200,12 +233,14 @@ export async function checkAuthStatus(force = false): Promise<boolean> {
   }
   // 第三层：服务端校验（Cookie / 飞书）
   try {
-    const data = await request<{ authenticated: boolean }>({ action: 'authStatus' });
-    authStatusCache = { authenticated: data.authenticated, ts: Date.now() };
+    const data = await request<{ authenticated: boolean; feishuConnected: boolean }>({ action: 'authStatus' });
+    authStatusCache = { authenticated: data.authenticated, feishuConnected: data.feishuConnected, ts: Date.now() };
     // 仅持久化「已登录」态；未登录不写入 localStorage（防止 false 锁死首页）
     if (data.authenticated) {
-      clientCacheSet(AUTH_LS_KEY, { authenticated: true }, AUTH_LS_TTL);
+      clientCacheSet(AUTH_LS_KEY, { authenticated: true, feishuConnected: data.feishuConnected }, AUTH_LS_TTL);
     }
+    // 广播真实连接状态
+    setFeishuConnected(data.feishuConnected);
     return data.authenticated;
   } catch {
     return false;
