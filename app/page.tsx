@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap, AlertTriangle } from 'lucide-react';
+import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, AlertTriangle } from 'lucide-react';
 import { fetchOAuthUrl, checkAuthStatus, logout as apiLogout, POST_LOGIN_REDIRECT_KEY } from '@/lib/api';
 import { useFeishuConnection } from '@/lib/useFeishuConnection';
 import { ANIM_STYLES } from '@/lib/animations';
@@ -45,9 +45,9 @@ const SERVICE_CARDS = [
     href: '/flow',
     icon: Workflow,
     title: '工作流',
-    desc: 'Webhook 自动化工作流',
+    desc: '可视化编排自动化流程',
     accent: 'violet',
-    stat: '自定义触发 · CRUD 编排',
+    stat: '多步触发 · 条件分支 · CRUD',
   },
 ] as const;
 
@@ -237,20 +237,6 @@ export default function RootPage() {
       <main className="relative flex-1 flex items-center justify-center px-6 py-16">
         <div className={`w-full max-w-4xl text-center transition-all duration-700 ${revealed ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'}`}>
 
-          {/* Badge */}
-          <div className="mb-8" style={{ transitionDelay: '0ms' }}>
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium bg-white/70 backdrop-blur border border-neutral-200/60 shadow-sm">
-              <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${isAuthenticated ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              <Zap className={`w-3 h-3 ${isAuthenticated ? 'text-emerald-500' : 'text-amber-500'}`} />
-              <span className="text-neutral-500">飞书开放平台</span>
-              <span className="text-neutral-300">·</span>
-              <span className="text-neutral-500">OAuth 2.0</span>
-              <span className="text-neutral-300">·</span>
-              <span className="bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent font-semibold">
-                {isAuthenticated ? '已鉴权' : '安全鉴权'}
-              </span>
-            </div>
-          </div>
 
           {/* Hero */}
           <div className="mb-10" style={{ transitionDelay: '80ms' }}>
@@ -264,10 +250,7 @@ export default function RootPage() {
               多维表格<span className="text-amber-500 font-semibold"> · </span>
               云文档<span className="text-sky-500 font-semibold"> · </span>
               电子表格<span className="text-emerald-500 font-semibold"> · </span>
-              自动化工作流
-            </p>
-            <p className="mt-3 text-sm text-neutral-400 max-w-lg mx-auto">
-              通过飞书标准 OAuth 协议接入，一站式管理你的全部飞书资源
+              工作流
             </p>
           </div>
 
@@ -297,7 +280,7 @@ export default function RootPage() {
             {SERVICE_CARDS.map((card, i) => {
               const a = accentClasses(card.accent);
               const baseClass =
-                'group relative flex flex-col p-6 rounded-2xl bg-white/80 backdrop-blur border border-neutral-200/70 shadow-sm transition-all duration-300';
+                'group relative flex flex-col p-6 rounded-2xl bg-white/80 backdrop-blur border border-neutral-200/70 shadow-sm transition-[transform,box-shadow] duration-300 opacity-0 animate-slide-up';
               const hoverClass = isAuthenticated
                 ? `hover:-translate-y-1 hover:shadow-xl ${a.ring}`
                 : 'hover:shadow-lg';
@@ -342,7 +325,7 @@ export default function RootPage() {
                       navigate(card.href, { accent: card.accent });
                     }}
                     className={`${baseClass} ${hoverClass}`}
-                    style={{ transitionDelay: `${200 + i * 100}ms` }}
+                    style={{ animationDelay: `${200 + i * 100}ms` }}
                   >
                     {inner}
                   </Link>
@@ -353,7 +336,7 @@ export default function RootPage() {
                 <div
                   key={card.title}
                   className={`${baseClass} ${hoverClass}`}
-                  style={{ transitionDelay: `${200 + i * 100}ms` }}
+                  style={{ animationDelay: `${200 + i * 100}ms` }}
                 >
                   {inner}
                 </div>

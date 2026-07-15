@@ -160,7 +160,10 @@ export default function DashboardPage() {
   const handleListApps = useCallback(() => {
     withLoading(async () => {
       const { data } = await listApps();
-      setApps(data.files || []);
+      const sorted = (data.files || []).slice().sort(
+        (a, b) => new Date(b.update_time).getTime() - new Date(a.update_time).getTime(),
+      );
+      setApps(sorted);
     }, undefined, '获取多维表格列表失败');
   }, []);
 
@@ -168,7 +171,10 @@ export default function DashboardPage() {
   const handleSyncApps = useCallback(() => {
     withLoading(async () => {
       const { data } = await refreshApps();
-      setApps(data.files || []);
+      const sorted = (data.files || []).slice().sort(
+        (a, b) => new Date(b.update_time).getTime() - new Date(a.update_time).getTime(),
+      );
+      setApps(sorted);
       addToast('success', `已同步 ${data.files?.length ?? 0} 个多维表格`);
     }, undefined, '同步多维表格列表失败');
   }, [addToast]);
@@ -475,6 +481,7 @@ export default function DashboardPage() {
                     apps={apps} selectedApp={selectedApp}
                     isAuthenticated={isAuthenticated} isCreating={isCreating}
                     onSelectApp={handleSelectApp} onCreateApp={handleCreateApp}
+                    onRefresh={handleSyncApps}
                   />
                 )
               )}

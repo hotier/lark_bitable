@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { Grid3X3, Plus, Trash2, Search, X, ExternalLink } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Grid3X3, Plus, Trash2, Search, X, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import type { App, ToastMessage } from '@/types';
 import {
   listSheets, createSheet, deleteFile, invalidateSheetsCache, refreshSheets,
@@ -30,6 +30,8 @@ export default function SheetsPage() {
   const [nameCardRect, setNameCardRect] = useState<DOMRect | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<App | null>(null);
   const [search, setSearch] = useState('');
+  const [sortField, setSortField] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [previewFile, setPreviewFile] = useState<App | null>(null);
 
   const { endTransition } = useRouteTransition();
@@ -96,6 +98,37 @@ export default function SheetsPage() {
   const filtered = search
     ? files.filter((f) => f.name.toLowerCase().includes(search.toLowerCase()))
     : files;
+
+  const handleSort = useCallback((field: string) => {
+    if (sortField === field) {
+      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortOrder('desc');
+    }
+  }, [sortField]);
+
+  const sorted = useMemo(() => {
+    if (!sortField) return filtered;
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      switch (sortField) {
+        case 'name':
+          cmp = a.name.localeCompare(b.name);
+          break;
+        case 'creator':
+          cmp = (a.creator_name || '').localeCompare(b.creator_name || '');
+          break;
+        case 'update_time':
+          cmp = new Date(a.update_time).getTime() - new Date(b.update_time).getTime();
+          break;
+        case 'create_time':
+          cmp = new Date(a.create_time).getTime() - new Date(b.create_time).getTime();
+          break;
+      }
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
+  }, [filtered, sortField, sortOrder]);
 
   return (
     <div className="flex flex-col h-full">
@@ -189,15 +222,28 @@ export default function SheetsPage() {
           ) : (
             <div className="rounded-xl bg-white border border-neutral-200 overflow-x-auto">
               {/* Header */}
-              <div className="flex items-center h-10 px-5 gap-4 text-xs font-medium text-neutral-400 bg-neutral-50 border-b border-neutral-100">
-                <span className="flex-1 min-w-0">名称</span>
-                <span className="w-[140px]">创建人</span>
+              <div className="flex items-center h-10 px-5 gap-4 text-xs font-medium text-neutral-400 bg-neutral-50 border-b border-neutral-100 min-w-[640px]">
+                <button onClick={() => handleSort('name')} className="flex items-center flex-1 min-w-0 hover:text-neutral-600 transition-colors">
+                  名称
+                  {sortField === 'name' ? (sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />) : <ArrowUpDown className="w-3 h-3 ml-1 opacity-40" />}
+                </button>
+                <button onClick={() => handleSort('creator')} className="flex items-center w-[140px] hover:text-neutral-600 transition-colors">
+                  创建人
+                  {sortField === 'creator' ? (sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />) : <ArrowUpDown className="w-3 h-3 ml-1 opacity-40" />}
+                </button>
                 <span className="w-[280px] hidden xl:block">链接</span>
-                <span className="w-[110px] text-right">创建时间</span>
+                <button onClick={() => handleSort('update_time')} className="flex items-center justify-end w-[130px] hover:text-neutral-600 transition-colors">
+                  更新时间
+                  {sortField === 'update_time' ? (sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />) : <ArrowUpDown className="w-3 h-3 ml-1 opacity-40" />}
+                </button>
+                <button onClick={() => handleSort('create_time')} className="flex items-center justify-end w-[110px] hover:text-neutral-600 transition-colors">
+                  创建时间
+                  {sortField === 'create_time' ? (sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />) : <ArrowUpDown className="w-3 h-3 ml-1 opacity-40" />}
+                </button>
                 <span className="w-[72px]" />
               </div>
               {/* Rows */}
-              {filtered.map((file) => (
+              {sorted.map((file) => (
                 <div
                   key={file.app_token}
                   className="flex items-center px-5 py-3 gap-4 border-b border-neutral-50 last:border-b-0 hover:bg-green-50/30 transition-colors group min-w-[640px]"
@@ -208,7 +254,7 @@ export default function SheetsPage() {
                       type="button"
                       onClick={() => setPreviewFile(file)}
                       className="text-sm font-medium text-neutral-800 truncate group-hover:text-green-600 transition-colors text-left"
-                      title="点击内嵌预览"
+  
                     >
                       {file.name}
                     </button>
@@ -245,11 +291,22 @@ export default function SheetsPage() {
                       <span className="text-xs text-neutral-300">—</span>
                     )}
                   </div>
+                  <div className="w-[130px] text-xs text-neutral-400 text-right flex-shrink-0">
+                    {file.update_time && !Number.isNaN(new Date(file.update_time).getTime())
+                      ? (() => {
+                          const d = new Date(file.update_time);
+                          const pad = (n: number) => String(n).padStart(2, '0');
+                          return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+                        })()
+                      : '—'}
+                  </div>
                   <div className="w-[110px] text-xs text-neutral-400 text-right flex-shrink-0">
                     {file.create_time && !Number.isNaN(new Date(file.create_time).getTime())
-                      ? new Date(file.create_time).toLocaleDateString('zh-CN', {
-                          year: 'numeric', month: 'short', day: 'numeric',
-                        })
+                      ? (() => {
+                          const d = new Date(file.create_time);
+                          const pad = (n: number) => String(n).padStart(2, '0');
+                          return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+                        })()
                       : '—'}
                   </div>
                   <div className="w-[72px] flex justify-end flex-shrink-0">

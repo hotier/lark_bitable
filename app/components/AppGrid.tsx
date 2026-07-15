@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Table2, Folder } from 'lucide-react';
+import { Clock, Table2, Folder } from 'lucide-react';
 import type { App } from '@/types';
 
 interface AppGridProps {
@@ -11,6 +11,7 @@ interface AppGridProps {
   isCreating: boolean;
   onSelectApp: (app: App) => void;
   onCreateApp: (name: string, folderToken?: string) => Promise<void>;
+  onRefresh: () => void;
 }
 
 const ACCENT_COLORS = [
@@ -248,6 +249,7 @@ export default function AppGrid({
   isCreating,
   onSelectApp,
   onCreateApp,
+  onRefresh,
 }: AppGridProps) {
   const [showCreateModal, setShowCreateModal] = useState(false);
 
@@ -331,15 +333,24 @@ export default function AppGrid({
 
                   {/* 底部信息 */}
                   <div className="flex items-center justify-between pt-3 border-t border-neutral-50">
-                    <span className="text-xs text-neutral-400">
-                      {app.create_time && !Number.isNaN(new Date(app.create_time).getTime())
-                        ? new Date(app.create_time).toLocaleDateString('zh-CN', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : '—'}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+                        className="p-0.5 rounded text-neutral-400 hover:text-amber-500 hover:bg-amber-50 transition-colors"
+                        title="同步更新"
+                      >
+                        <Clock className="w-3 h-3" />
+                      </button>
+                      <span className="text-xs text-neutral-400">
+                        {app.update_time && !Number.isNaN(new Date(app.update_time).getTime())
+                          ? (() => {
+                              const d = new Date(app.update_time);
+                              const pad = (n: number) => String(n).padStart(2, '0');
+                              return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                            })()
+                          : '—'}
+                      </span>
+                    </div>
                     <span className="text-xs font-medium text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
                       选择表格
                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

@@ -1,72 +1,107 @@
 'use client';
 
-import { useSyncExternalStore } from 'react';
-import { Moon, Sun } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Moon, Sun, Monitor } from 'lucide-react';
 
-function subscribe(callback: () => void) {
-  const observer = new MutationObserver(callback);
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class'],
-  });
-  return () => observer.disconnect();
+type Theme = 'system' | 'light' | 'dark';
+
+function getStoredTheme(): Theme {
+  try {
+    const t = localStorage.getItem('theme');
+    if (t === 'dark') return 'dark';
+    if (t === 'light') return 'light';
+  } catch {
+    /* 忽略 */
+  }
+  return 'system';
 }
 
-function getSnapshot() {
-  return document.documentElement.classList.contains('dark');
+function applyTheme(theme: Theme) {
+  const root = document.documentElement;
+  const preferDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = theme === 'dark' || (theme === 'system' && preferDark);
+  root.classList.toggle('dark', isDark);
+  try {
+    if (theme === 'system') {
+      localStorage.removeItem('theme');
+    } else {
+      localStorage.setItem('theme', theme);
+    }
+  } catch {
+    /* 忽略 */
+  }
 }
 
-function getServerSnapshot() {
-  return false;
-}
+const cycle: Theme[] = ['system', 'light', 'dark'];
+
+const icons: Record<Theme, { Icon: typeof Sun; label: string }> = {
+  system: { Icon: Monitor, label: '跟随系统' },
+  light: { Icon: Sun, label: '浅色模式' },
+  dark: { Icon: Moon, label: '暗色模式' },
+};
 
 /**
- * 暗色模式切换按钮。
- * 主题状态由 <html class="dark"> 与 localStorage('theme') 维护，
+ * 深浅色模式切换按钮（三态：跟随系统 → 浅色 → 暗色）。
  * 首屏防闪烁脚本见 app/layout.tsx。
- * 用 useSyncExternalStore 读取主题，避免在 effect 中同步 setState（并规避 hydration 不一致）。
  */
 export default function ThemeToggle() {
-  const dark = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const [theme, setTheme] = useState<Theme>('system');
+  const [pending, setPending] = useState(false);
 
-  const toggle = () => {
-    const root = document.documentElement;
-    const next = !dark;
-    const apply = () => {
-      root.classList.toggle('dark', next);
-      try {
-        localStorage.setItem('theme', next ? 'dark' : 'light');
-      } catch {
-        /* localStorage 不可用时忽略 */
+  // 客户端挂载后读取 localStorage 中的真实状态
+  useEffect(() => {
+    setTheme(getStoredTheme());
+  }, []);
+
+  // 监听系统主题变更：仅在「跟随系统」模式下自动响应
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => {
+      if (getStoredTheme() === 'system') {
+        applyTheme('system');
       }
     };
-    // 优先用 View Transitions：整页交叉淡入，平滑且无「逐元素过渡」导致的抖动
-    // （多维表格等大数据页面、导航区/功能区反差边界尤其受益）。
-    // 不支持的浏览器回退到 html.theme-transition 逐元素过渡。
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  const toggle = useCallback(() => {
+    if (pending) return;
+    setPending(true);
+    const idx = cycle.indexOf(theme);
+    const next = cycle[(idx + 1) % cycle.length];
+    setTheme(next);
+
+    const apply = () => applyTheme(next);
     const doc = document as Document & {
       startViewTransition?: (cb: () => void) => { finished: Promise<void> };
     };
     if (typeof doc.startViewTransition === 'function') {
-      doc.startViewTransition(apply);
+      doc.startViewTransition(apply).finished.then(() => setPending(false));
     } else {
-      root.classList.add('theme-transition');
+      document.documentElement.classList.add('theme-transition');
       apply();
-      window.setTimeout(() => root.classList.remove('theme-transition'), 450);
+      window.setTimeout(() => {
+        document.documentElement.classList.remove('theme-transition');
+        setPending(false);
+      }, 450);
     }
-  };
+  }, [pending, theme]);
+
+  const { Icon, label } = icons[theme];
 
   return (
     <button
       type="button"
       onClick={toggle}
-      aria-label={dark ? '切换到浅色模式' : '切换到暗色模式'}
-      title={dark ? '切换到浅色模式' : '切换到暗色模式'}
+      aria-label={`当前：${label}，点击切换`}
+      title={`当前：${label}`}
       className="flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-[var(--surface-hover)]"
       style={{ color: 'var(--text-tertiary)' }}
       onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text)')}
       onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
     >
-      {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+      <Icon className="w-4 h-4" />
     </button>
   );
 }
