@@ -105,7 +105,7 @@ function getFileToken(f: FeishuAttachment): string | undefined {
   return f.file_token || f.token;
 }
 
-/** 附件单元格：直接拼接代理预览 URL，无数据库依赖 */
+/** 附件单元格：通过签名 API 获取带有效期的预览链接 */
 function AttachmentsCell({
   value,
   tableId,
@@ -117,6 +117,9 @@ function AttachmentsCell({
   fieldId: string;
   recordId: string;
 }) {
+  // fileToken → signed URL 的映射缓存
+  const [urlMap, setUrlMap] = useState<Record<string, string>>({});
+  const [loaded, setLoaded] = useState(false);
   // 已预取的链接 key，避免 hover 重复预取
   const prefetchedRef = useRef<Set<string>>(new Set());
 
@@ -125,6 +128,44 @@ function AttachmentsCell({
     prefetchedRef.current.add(key);
     fetch(url, { cache: 'force-cache' }).catch(() => {});
   };
+
+  useEffect(() => {
+    if (!Array.isArray(value) || value.length === 0) return;
+
+    const files = (value as FeishuAttachment[]).filter((f) => getFileToken(f));
+    if (files.length === 0) return;
+
+    let cancelled = false;
+
+    fetch('/api/feishu/files/preview-sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tableId,
+        fieldId,
+        recordId,
+        files: files.map((f) => ({
+          fileToken: getFileToken(f)!,
+          fileName: f.name,
+        })),
+      }),
+    })
+      .then((res) => res.json())
+      .then((data: { urls?: { fileToken: string; url: string }[] }) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        (data.urls || []).forEach((u) => {
+          map[u.fileToken] = u.url;
+        });
+        setUrlMap(map);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setLoaded(true); // 失败也标记为已加载，回退到不可点击状态
+      });
+
+    return () => { cancelled = true; };
+  }, [tableId, fieldId, recordId, JSON.stringify(value)]);
 
   if (!Array.isArray(value) || value.length === 0) return <span className="text-neutral-300">—</span>;
 
@@ -135,9 +176,7 @@ function AttachmentsCell({
       {files.map((file, i) => {
         const ft = getFileToken(file);
         const name = file.name || ft || '?';
-        const previewUrl = ft
-          ? `/api/feishu/files/preview?ft=${encodeURIComponent(ft)}&tid=${encodeURIComponent(tableId)}&fid=${encodeURIComponent(fieldId)}&rid=${encodeURIComponent(recordId)}&n=${encodeURIComponent(name)}`
-          : null;
+        const previewUrl = ft ? urlMap[ft] : null;
 
         return (
           <a
@@ -147,9 +186,13 @@ function AttachmentsCell({
             rel="noopener noreferrer"
             onMouseEnter={() => { if (previewUrl) prefetch(previewUrl, ft || `i_${i}`); }}
             className={`inline-flex items-center gap-1 text-xs truncate max-w-full ${
-              previewUrl ? 'text-blue-600 hover:text-blue-800 hover:underline' : 'text-neutral-400'
+              previewUrl
+                ? 'text-blue-600 hover:text-blue-800 hover:underline'
+                : loaded && ft
+                  ? 'text-neutral-400 cursor-not-allowed'
+                  : 'text-neutral-400'
             }`}
-            title={name}
+            title={loaded || !ft ? name : `${name}（加载中…）`}
           >
             <Paperclip className="w-3 h-3 shrink-0" />
             <span className="truncate">{name}</span>
