@@ -1376,8 +1376,9 @@ class FeishuService {
           obj_type: n.obj_type || '',
           title: n.title || '',
           url: n.url || '',
-          create_time: n.create_time ? new Date(Number(n.create_time) * 1000).toISOString() : '',
-          update_time: n.update_time ? new Date(Number(n.update_time) * 1000).toISOString() : '',
+          // 官方 wiki 节点时间字段为 obj_create_time / obj_edit_time（秒级 Unix 时间戳字符串）
+          create_time: n.obj_create_time ? new Date(Number(n.obj_create_time) * 1000).toISOString() : '',
+          update_time: n.obj_edit_time ? new Date(Number(n.obj_edit_time) * 1000).toISOString() : '',
         });
         if (n.has_child) {
           await this.collectWikiNodes(spaceId, spaceName, spaceType, n.node_token, userAccessToken, out);
