@@ -3,37 +3,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History, Download, Loader2 } from 'lucide-react';
 import type { Field, FieldType, FeishuRecord } from '@/types';
-import { exportBitable } from '@/lib/api';
+import { exportBitable, exportBitableNative } from '@/lib/api';
 import { formatFieldValue } from '@/lib/field-format';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
-
-const TYPE_LABELS: Record<FieldType, string> = {
-  text: '文本', number: '数字', date: '日期', single_select: '单选',
-  multi_select: '多选', checkbox: '复选框', person: '人员',
-  phone: '电话', email: '邮箱', url: '链接', file: '文件',
-  formula: '公式', lookup: '查找引用', created_time: '创建时间',
-  created_by: '创建人', updated_time: '更新时间', updated_by: '更新人',
-};
-
-const TYPE_COLORS: Record<FieldType, string> = {
-  text: 'bg-neutral-50 text-amber-600 border-blue-100',
-  number: 'bg-emerald-50 text-emerald-600 border-emerald-100',
-  date: 'bg-amber-50 text-amber-600 border-amber-100',
-  single_select: 'bg-amber-50 text-amber-600 border-amber-100',
-  multi_select: 'bg-violet-50 text-violet-600 border-violet-100',
-  checkbox: 'bg-cyan-50 text-cyan-600 border-cyan-100',
-  person: 'bg-pink-50 text-pink-600 border-pink-100',
-  phone: 'bg-teal-50 text-teal-600 border-teal-100',
-  email: 'bg-rose-50 text-rose-600 border-rose-100',
-  url: 'bg-amber-50 text-amber-600 border-amber-100',
-  file: 'bg-orange-50 text-orange-600 border-orange-100',
-  formula: 'bg-neutral-50 text-neutral-600 border-neutral-100',
-  lookup: 'bg-lime-50 text-lime-600 border-lime-100',
-  created_time: 'bg-neutral-50 text-neutral-600 border-neutral-100',
-  created_by: 'bg-yellow-50 text-yellow-600 border-yellow-100',
-  updated_time: 'bg-neutral-50 text-neutral-600 border-neutral-100',
-  updated_by: 'bg-yellow-50 text-yellow-600 border-yellow-100',
-};
 
 const TYPE_ICONS: Record<FieldType, React.ComponentType<{ className?: string }>> = {
   text: Type, number: Hash, date: Calendar, single_select: CircleDot,
@@ -42,20 +14,15 @@ const TYPE_ICONS: Record<FieldType, React.ComponentType<{ className?: string }>>
   created_time: Clock, created_by: UserPlus, updated_time: History, updated_by: User,
 };
 
-// 不需要填写值的系统字段类型
-const READONLY_FIELD_TYPES: FieldType[] = [
-  'formula', 'lookup', 'created_time', 'created_by', 'updated_time', 'updated_by', 'file',
-];
-
 interface RecordManagerProps {
   appToken: string;
   tableId: string;
   appName: string;
+  tableName: string;
   fields: Field[];
   records: FeishuRecord[];
   isLoading: boolean;
   onSwitchToTables: () => void;
-  onCreateRecord: (fields: Record<string, unknown>) => Promise<void>;
   onDeleteRecord: (recordId: string) => Promise<void>;
   /** 是否正在后台静默预热全量记录（展示加载进度动画） */
   warming?: boolean;
@@ -74,6 +41,8 @@ interface RecordManagerProps {
   onSort: (fieldId: string) => void;
   /** 可选：仅展示这些字段列（不传则展示全部 fields） */
   displayFields?: Field[];
+  /** 导出成功/失败时触发 toast 回调（飞书官方导出使用） */
+  onExportToast?: (type: 'success' | 'error', text: string) => void;
 }
 
 /** 未选择表时的空状态 */
@@ -129,188 +98,6 @@ function renderFieldValue(value: unknown, fieldType: FieldType, optionMap?: Reco
   return formatFieldValue(value, fieldType, { optionMap, emptyText: '—' });
 }
 
-/** 新增记录表单组件 */
-function AddRecordForm({
-  fields,
-  onCreateRecord,
-  onClose,
-}: {
-  fields: Field[];
-  onCreateRecord: (fields: Record<string, unknown>) => Promise<void>;
-  onClose: () => void;
-}) {
-  const editableFields = fields.filter((f) => !READONLY_FIELD_TYPES.includes(f.type));
-  const [formValues, setFormValues] = useState<Record<string, unknown>>({});
-  const [submitting, setSubmitting] = useState(false);
-
-  const setValue = (fieldId: string, value: unknown) => {
-    setFormValues((prev) => ({ ...prev, [fieldId]: value }));
-  };
-
-  const handleSubmit = async () => {
-    // 过滤掉空值
-    const cleanValues: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(formValues)) {
-      if (val === '' || val === null || val === undefined) continue;
-      cleanValues[key] = val;
-    }
-    if (Object.keys(cleanValues).length === 0) return;
-    setSubmitting(true);
-    try {
-      await onCreateRecord(cleanValues);
-      setFormValues({});
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="bg-neutral-50/80 rounded-md border border-neutral-100 p-5 mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-bold text-neutral-700">新增记录</h3>
-        <button onClick={onClose} className="p-1 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {editableFields.map((field) => (
-          <FieldInput
-            key={field.field_id}
-            field={field}
-            value={formValues[field.field_id]}
-            onChange={(v) => setValue(field.field_id, v)}
-          />
-        ))}
-      </div>
-
-      <div className="flex items-center gap-3 mt-5 pt-4 border-t border-neutral-200/60">
-        <button
-          onClick={handleSubmit}
-          disabled={submitting}
-          className="px-5 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-all duration-300 font-semibold text-sm shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {submitting ? '提交中...' : '创建记录'}
-        </button>
-        <button onClick={onClose} className="px-4 py-2 text-sm text-neutral-500 hover:text-neutral-700 transition-colors">
-          取消
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** 单个字段输入组件 */
-function FieldInput({
-  field,
-  value,
-  onChange,
-}: {
-  field: Field;
-  value: unknown;
-  onChange: (value: unknown) => void;
-}) {
-  const baseInputClass =
-    'w-full px-3 py-2 rounded-lg border border-neutral-200 bg-white text-sm text-neutral-700 placeholder:text-neutral-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all';
-
-  const stringValue = value === null || value === undefined ? '' : String(value);
-
-  // URL 字段：双输入（链接 + 文本）
-  if (field.type === 'url') {
-    const urlObj = (typeof value === 'object' && value !== null ? value : { link: '', text: '' }) as {
-      link?: string;
-      text?: string;
-    };
-    return (
-      <div>
-        <label className="block text-xs font-semibold text-neutral-500 mb-1.5">
-          <Link className="w-3.5 h-3.5 inline-block" /> {field.name} <span className="font-normal text-neutral-300">链接</span>
-        </label>
-        <div className="space-y-2">
-          <input
-            type="url"
-            placeholder="https://example.com"
-            value={urlObj.link || ''}
-            onChange={(e) => onChange({ link: e.target.value, text: urlObj.text || '' })}
-            className={baseInputClass}
-          />
-          <input
-            type="text"
-            placeholder="链接显示文字"
-            value={urlObj.text || ''}
-            onChange={(e) => onChange({ link: urlObj.link || '', text: e.target.value })}
-            className={baseInputClass}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  // 数字字段
-  if (field.type === 'number') {
-    return (
-      <div>
-        <label className="block text-xs font-semibold text-neutral-500 mb-1.5">
-          123 {field.name} <span className="font-normal text-neutral-300">数字</span>
-        </label>
-        <input
-          type="number"
-          placeholder="输入数字"
-          value={stringValue}
-          onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
-          className={baseInputClass}
-        />
-      </div>
-    );
-  }
-
-  // 复选框
-  if (field.type === 'checkbox') {
-    return (
-      <div className="flex items-center gap-3 pt-5">
-        <input
-          type="checkbox"
-          checked={!!value}
-          onChange={(e) => onChange(e.target.checked)}
-          className="w-4 h-4 rounded border-neutral-300 text-amber-500 focus:ring-amber-500/20"
-        />
-        <label className="text-xs font-semibold text-neutral-500">
-          <Check className="w-3.5 h-3.5 inline-block" /> {field.name} <span className="font-normal text-neutral-300">复选框</span>
-        </label>
-      </div>
-    );
-  }
-
-  // 默认：文本输入
-  const placeholderMap: Partial<Record<FieldType, string>> = {
-    phone: '输入电话号码',
-    email: 'name@example.com',
-    text: '输入文本',
-    single_select: '输入选项名',
-    multi_select: '选项A, 选项B',
-    person: '输入人员ID (ou_xxx)',
-    date: 'YYYY-MM-DD 或时间戳',
-  };
-
-  return (
-    <div>
-      <label className="block text-xs font-semibold text-neutral-500 mb-1.5">
-        {(() => { const Icon = TYPE_ICONS[field.type]; return Icon ? <Icon className="w-3.5 h-3.5 inline-block" /> : '?'; })()} {field.name}{' '}
-        <span className="font-normal text-neutral-300">{TYPE_LABELS[field.type] || field.type}</span>
-      </label>
-      <input
-        type="text"
-        placeholder={placeholderMap[field.type] || `输入${TYPE_LABELS[field.type] || ''}`}
-        value={stringValue}
-        onChange={(e) => onChange(e.target.value)}
-        className={baseInputClass}
-      />
-    </div>
-  );
-}
-
 type FeishuAttachment = { file_token?: string; token?: string; name?: string; type?: string; size?: number };
 
 /** 兼容飞书附件字段两种键名：记录字段多为 token，drive 接口用 file_token */
@@ -318,7 +105,7 @@ function getFileToken(f: FeishuAttachment): string | undefined {
   return f.file_token || f.token;
 }
 
-/** 附件单元格：获取加密短 token，展示为可点击超链接 */
+/** 附件单元格：直接拼接代理预览 URL，无数据库依赖 */
 function AttachmentsCell({
   value,
   tableId,
@@ -330,58 +117,14 @@ function AttachmentsCell({
   fieldId: string;
   recordId: string;
 }) {
-  const [tokens, setTokens] = useState<Record<string, string>>({});
-  const fetchedRef = useRef(false);
-  // 已预取的预览链接 key，避免 hover 重复预取
+  // 已预取的链接 key，避免 hover 重复预取
   const prefetchedRef = useRef<Set<string>>(new Set());
 
-  // 按需预加载：hover 时预热预览链接，文件内容进入浏览器缓存，点击新标签秒开
   const prefetch = (url: string, key: string) => {
     if (prefetchedRef.current.has(key)) return;
     prefetchedRef.current.add(key);
     fetch(url, { cache: 'force-cache' }).catch(() => {});
   };
-
-  useEffect(() => {
-    if (fetchedRef.current) return;
-    if (!Array.isArray(value) || value.length === 0) return;
-
-    const files = value as FeishuAttachment[];
-    const validFiles = files.filter((f) => getFileToken(f));
-    if (validFiles.length === 0) return;
-
-    fetchedRef.current = true;
-
-    // 批量获取所有文件的加密 token
-    Promise.all(
-      validFiles.map(async (file) => {
-        try {
-          const res = await fetch('/api/feishu/files/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              file_token: getFileToken(file),
-              table_id: tableId,
-              field_id: fieldId,
-              record_id: recordId,
-              name: file.name,
-            }),
-          });
-          if (!res.ok) return null;
-          const data = await res.json();
-          return { key: getFileToken(file)!, token: data.id as string };
-        } catch {
-          return null;
-        }
-      })
-    ).then((results) => {
-      const map: Record<string, string> = {};
-      for (const r of results) {
-        if (r) map[r.key] = r.token;
-      }
-      setTokens(map);
-    });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!Array.isArray(value) || value.length === 0) return <span className="text-neutral-300">—</span>;
 
@@ -390,18 +133,19 @@ function AttachmentsCell({
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
       {files.map((file, i) => {
-        const ft = getFileToken(file) || `__idx_${i}`;
-        const name = file.name || getFileToken(file) || '?';
-        const token = getFileToken(file) ? tokens[getFileToken(file)!] : undefined;
-        const previewUrl = token ? `/p/${encodeURIComponent(token)}` : null;
+        const ft = getFileToken(file);
+        const name = file.name || ft || '?';
+        const previewUrl = ft
+          ? `/api/feishu/files/preview?ft=${encodeURIComponent(ft)}&tid=${encodeURIComponent(tableId)}&fid=${encodeURIComponent(fieldId)}&rid=${encodeURIComponent(recordId)}&n=${encodeURIComponent(name)}`
+          : null;
 
         return (
           <a
-            key={ft}
+            key={ft || `__idx_${i}`}
             href={previewUrl || '#'}
             target={previewUrl ? '_blank' : undefined}
             rel="noopener noreferrer"
-            onMouseEnter={() => { if (previewUrl) prefetch(previewUrl, ft); }}
+            onMouseEnter={() => { if (previewUrl) prefetch(previewUrl, ft || `i_${i}`); }}
             className={`inline-flex items-center gap-1 text-xs truncate max-w-full ${
               previewUrl ? 'text-blue-600 hover:text-blue-800 hover:underline' : 'text-neutral-400'
             }`}
@@ -420,11 +164,11 @@ export default function RecordManager({
   appToken,
   tableId: _tableId,
   appName,
+  tableName,
   fields,
   records,
   isLoading,
   onSwitchToTables,
-  onCreateRecord,
   onDeleteRecord,
   warming = false,
   loadedCount = 0,
@@ -438,12 +182,26 @@ export default function RecordManager({
   sortFieldId,
   sortOrder,
   displayFields,
+  onExportToast,
 }: RecordManagerProps) {
-  const [showForm, setShowForm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [exportMsg, setExportMsg] = useState<{ type: 'error'; text: string } | null>(null);
+  const [exportMsg, setExportMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [showExportPicker, setShowExportPicker] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // 点击弹窗外关闭
+  useEffect(() => {
+    if (!showExportPicker) return;
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setShowExportPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showExportPicker]);
 
   // 放大（全屏）模式下按 Esc 退出
   useEffect(() => {
@@ -500,42 +258,85 @@ export default function RecordManager({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!showForm && (
+          {/* 导出按钮 + 选项弹窗 */}
+          <div className="relative" ref={pickerRef}>
             <button
-              onClick={() => setShowForm(true)}
-              className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-md hover:from-emerald-600 hover:to-teal-700 transition-all duration-300 font-semibold text-sm shadow-lg shadow-emerald-500/20"
+              onClick={() => setShowExportPicker((v) => !v)}
+              title="导出数据"
+              className="p-2 text-neutral-500 bg-neutral-100 rounded-md hover:bg-neutral-200 transition-colors"
             >
-              + 新增记录
+              {exporting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
             </button>
-          )}
 
-          {/* 导出当前数据表为 Excel（纯图标，与放大按钮一致） */}
-          <button
-            onClick={async () => {
-              if (exporting || !appToken || !_tableId) return;
-              setExporting(true);
-              setExportMsg(null);
-              try {
-                await exportBitable(appToken, 'xlsx', _tableId, appName);
-              } catch (err) {
-                setExportMsg({ type: 'error', text: `导出失败：${err instanceof Error ? err.message : '未知错误'}` });
-                setTimeout(() => setExportMsg(null), 5000);
-              } finally {
-                setExporting(false);
-              }
-            }}
-            disabled={exporting}
-            title="导出当前数据表为 Excel"
-            className="p-2 text-neutral-500 bg-neutral-100 rounded-md hover:bg-neutral-200 transition-colors disabled:opacity-50"
-          >
-            {exporting ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4" />
+            {showExportPicker && (
+              <div className="absolute right-0 top-full mt-1 w-auto bg-white rounded-lg shadow-lg border border-neutral-200 z-50 overflow-hidden">
+                <p className="text-xs text-neutral-400 px-4 pt-3 pb-1.5 font-medium">选择导出方式</p>
+                <div className="p-1.5 space-y-0.5">
+                  {/* 飞书官方导出 */}
+                  <button
+                    onClick={async () => {
+                      setShowExportPicker(false);
+                      if (exporting || !appToken || !_tableId) return;
+                      setExporting(true);
+                      try {
+                        await exportBitableNative(appToken, 'xlsx', _tableId, tableName);
+                        onExportToast?.('success', '导出成功');
+                      } catch (err) {
+                        onExportToast?.('error', `导出失败：${err instanceof Error ? err.message : '未知错误'}`);
+                      } finally {
+                        setExporting(false);
+                      }
+                    }}
+                    disabled={exporting}
+                    className="w-full text-left px-3 py-2 rounded-md hover:bg-amber-50 transition-colors disabled:opacity-50 group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Download className="w-4 h-4 text-amber-500 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-neutral-700 group-hover:text-amber-700 whitespace-nowrap">飞书官方</p>
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* 自建导出 */}
+                  <button
+                    onClick={async () => {
+                      setShowExportPicker(false);
+                      if (exporting || !appToken || !_tableId) return;
+                      setExporting(true);
+                      setExportMsg(null);
+                      try {
+                        await exportBitable(appToken, 'xlsx', _tableId, appName, tableName);
+                      } catch (err) {
+                        setExportMsg({ type: 'error', text: `导出失败：${err instanceof Error ? err.message : '未知错误'}` });
+                        setTimeout(() => setExportMsg(null), 5000);
+                      } finally {
+                        setExporting(false);
+                      }
+                    }}
+                    disabled={exporting}
+                    className="w-full text-left px-3 py-2 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-50 group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Download className="w-4 h-4 text-blue-500 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-neutral-700 group-hover:text-blue-700 whitespace-nowrap">站内解析</p>
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </div>
             )}
-          </button>
+          </div>
+
           {exportMsg && (
-            <span className="text-xs text-red-500">{exportMsg.text}</span>
+            <span className={`text-xs ${exportMsg.type === 'error' ? 'text-red-500' : 'text-emerald-600'}`}>
+              {exportMsg.text}
+            </span>
           )}
 
           {/* 放大 / 关闭表格 */}
@@ -567,34 +368,6 @@ export default function RecordManager({
           <div className="progress-bar" />
         </div>
       )}
-
-      {/* 新增记录表单 */}
-      {showForm && (
-        <AddRecordForm
-          fields={fields}
-          onCreateRecord={async (values) => {
-            await onCreateRecord(values);
-            setShowForm(false);
-          }}
-          onClose={() => setShowForm(false)}
-        />
-      )}
-
-      {/* 字段类型概览 */}
-      <div className="flex flex-wrap gap-2 mb-5">
-        {tableColumns.slice(0, 8).map((f) => (
-          <span
-            key={f.field_id}
-            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border ${TYPE_COLORS[f.type] || 'bg-neutral-50 text-neutral-500 border-neutral-100'}`}
-          >
-            {(() => { const Icon = TYPE_ICONS[f.type]; return Icon ? <Icon className="w-3 h-3" /> : <span>?</span>; })()}
-            {f.name}
-          </span>
-        ))}
-        {tableColumns.length > 8 && (
-          <span className="text-xs text-neutral-400 px-2 py-1">+{tableColumns.length - 8}</span>
-        )}
-      </div>
 
       {/* 表格 —— 滑动条内联在表体内 */}
       {records.length > 0 && (
@@ -686,7 +459,7 @@ export default function RecordManager({
           <svg className="w-12 h-12 mb-3 text-neutral-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
           </svg>
-          <p className="text-sm">暂无记录，点击「新增记录」开始</p>
+          <p className="text-sm">暂无记录</p>
         </div>
       )}
 

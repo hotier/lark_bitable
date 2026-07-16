@@ -3,11 +3,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { Table2, ClipboardList, FileText, ChevronRight } from 'lucide-react';
-import type { App, Table, Field, FieldType, FeishuRecord, ToastMessage } from '@/types';
+import type { App, Table, Field, FeishuRecord, ToastMessage } from '@/types';
 import {
   listApps, refreshApps, invalidateAppsCache, createApp,
-  listTables, createTable, deleteTable, listFields,
-  loadFirstRecords, warmUpAllRecords, loadAllRecords, invalidateRecordsCache, createRecord, deleteApiRecord,
+  listTables, deleteTable, listFields,
+  loadFirstRecords, warmUpAllRecords, loadAllRecords, invalidateRecordsCache, deleteApiRecord,
+  getFileDisplayName,
   logout as apiLogout,
 } from '@/lib/api';
 import TopBar from '@/app/components/TopBar';
@@ -16,7 +17,7 @@ import TableManager from '@/app/components/TableManager';
 import RecordManager, { getRecordFieldValue } from '@/app/components/RecordManager';
 import FieldSelector from '@/app/components/FieldSelector';
 import Toast from '@/app/components/Toast';
-import { TableListSkeleton, RecordListSkeleton } from '@/app/components/Skeletons';
+import { TableListSkeleton, TableRowSkeleton, RecordListSkeleton } from '@/app/components/Skeletons';
 import { useRouteTransition } from '@/app/components/RouteTransition';
 
 type View = 'apps' | 'tables' | 'records';
@@ -205,15 +206,6 @@ export default function DashboardPage() {
     }, undefined, '获取数据表列表失败');
   }, [selectedApp]);
 
-  const handleCreateTable = useCallback(async (name: string, fields: { name: string; type: FieldType }[]) => {
-    if (!selectedApp) return;
-    await withLoading(async () => {
-      await createTable(selectedApp.app_token, name, fields);
-      const data = await listTables(selectedApp.app_token);
-      setTables(data.items || []);
-    }, `数据表 "${name}" 创建成功`, '创建数据表失败');
-  }, [selectedApp]);
-
   const handleDeleteTable = useCallback((tableId: string, tableName: string) => {
     if (!selectedApp) return;
     withLoading(async () => {
@@ -287,20 +279,6 @@ export default function DashboardPage() {
       await loadTableData(selectedApp.app_token, selectedTableId);
     }, '记录已删除', '删除记录失败');
   }, [selectedApp, selectedTableId, loadTableData]);
-
-  const handleCreateRecord = useCallback(async (fields: Record<string, unknown>) => {
-    if (!selectedApp || !selectedTableId) return;
-    await withLoading(async () => {
-      const namedFields: Record<string, unknown> = {};
-      for (const [fieldId, value] of Object.entries(fields)) {
-        const fieldMeta = tableFields.find((f) => f.field_id === fieldId);
-        namedFields[fieldMeta?.name || fieldId] = value;
-      }
-      await createRecord(selectedApp.app_token, selectedTableId, namedFields);
-      invalidateRecordsCache(selectedApp.app_token, selectedTableId);
-      await loadTableData(selectedApp.app_token, selectedTableId);
-    }, '记录创建成功', '创建记录失败');
-  }, [selectedApp, selectedTableId, tableFields, loadTableData]);
 
   // 兜底：全量尚未预热完成时，若目标页超出本地已加载范围，则等待/触发全量加载
   const ensureFullLoaded = useCallback(async (targetPage: number) => {
@@ -396,7 +374,7 @@ export default function DashboardPage() {
                 className="font-medium transition-colors truncate max-w-[200px]"
                 style={{ color: view === 'tables' ? 'var(--text)' : 'var(--text-tertiary)' }}
               >
-                {selectedApp.name}
+                {selectedApp ? getFileDisplayName(selectedApp) : ''}
               </button>
             </>
           )}
@@ -487,12 +465,12 @@ export default function DashboardPage() {
               )}
               {view === 'tables' && (
                 isLoading && tables.length === 0 ? (
-                  <div className="p-1"><TableListSkeleton rows={6} /></div>
+                  <div className="p-1"><TableRowSkeleton rows={6} /></div>
                 ) : (
                   <TableManager
                     selectedApp={selectedApp} tables={tables} selectedTableId={selectedTableId}
                     isLoading={isLoading} onSelectTable={handleSelectTable}
-                    onDeleteTable={handleDeleteTable} onCreateTable={handleCreateTable}
+                    onDeleteTable={handleDeleteTable}
                     onSwitchToApps={() => setView('apps')}
                   />
                 )
@@ -503,11 +481,12 @@ export default function DashboardPage() {
                 ) : (
                   <RecordManager
                     appToken={selectedApp?.app_token ?? ''} tableId={selectedTableId}
-                    appName={selectedApp?.name ?? ''}
+                    appName={selectedApp ? getFileDisplayName(selectedApp) : ''}
+                    tableName={selectedTable?.name || ''}
                     fields={tableFields} displayFields={displayFields} records={displayRecords} isLoading={isLoading}
                     onSwitchToTables={() => setView('tables')}
-                    onCreateRecord={handleCreateRecord} onDeleteRecord={handleDeleteRecord}
-                    warming={warming} loadedCount={allRecords.length}
+                    onDeleteRecord={handleDeleteRecord}
+                    onExportToast={addToast} warming={warming} loadedCount={allRecords.length}
                     currentPage={currentPage} total={total} pageSize={PAGE_SIZE}
                     onNextPage={handleNextPage} onPrevPage={handlePrevPage} onGoToPage={handleGoToPage}
                     sortFieldId={sortFieldId} sortOrder={sortOrder} onSort={handleSort}

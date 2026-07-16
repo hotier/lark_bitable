@@ -149,41 +149,13 @@ export async function runMigrations(): Promise<void> {
     `;
 
     await s`
-      CREATE TABLE IF NOT EXISTS preview_tokens (
-        id          TEXT PRIMARY KEY,
-        file_token  TEXT NOT NULL DEFAULT '',
-        table_id    TEXT,
-        field_id    TEXT,
-        record_id   TEXT,
-        file_name   TEXT NOT NULL DEFAULT '',
-        created_at  BIGINT NOT NULL DEFAULT 0
-      )
-    `;
-    await s`
-      CREATE INDEX IF NOT EXISTS idx_preview_tokens_file_token
-      ON preview_tokens (file_token)
-    `;
-
-    await s`
       INSERT INTO schema_migrations (version, applied_at)
       VALUES (3, ${new Date().toISOString()})
     `;
-    console.log('[db] V3 迁移完成（user_tokens + preview_tokens 表）');
+    console.log('[db] V3 迁移完成（user_tokens 表）');
   }
 
-  // ── V4: preview_tokens 清理性能索引 ──
-  if (currentVersion < 4) {
-    await s`
-      CREATE INDEX IF NOT EXISTS idx_preview_tokens_created_at
-      ON preview_tokens (created_at)
-    `;
-
-    await s`
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (4, ${new Date().toISOString()})
-    `;
-    console.log('[db] V4 迁移完成（preview_tokens created_at 索引）');
-  }
+  // V4 已废弃（原 preview_tokens 索引，短链方案已移除）
 
   // ── V5: executions 记录触发器类型与快照（用于动态展示触发来源） ──
   if (currentVersion < 5) {

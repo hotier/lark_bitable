@@ -9,6 +9,8 @@
  * - 并发保护：写操作通过锁（Promise 链）序列化
  */
 
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
+import { resolve } from 'path';
 import { sql } from '@/lib/db';
 
 export interface StoredToken {
@@ -22,6 +24,14 @@ export interface StoredToken {
   refreshTokenExpireAt: number;
   /** 最后更新时间 ISO */
   updatedAt: string;
+}
+
+// ── 本地文件兜底路径 ──
+const TOKEN_FILE = resolve(process.cwd(), '.data', 'token.json');
+
+function ensureDataDir(): void {
+  const dir = resolve(process.cwd(), '.data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 // ── 内存缓存层 ──
@@ -58,6 +68,32 @@ function rowToToken(r: Record<string, unknown>): StoredToken {
   };
 }
 
+// ── 本地文件兜底 ──
+
+function loadFromFile(): StoredToken | null {
+  try {
+    if (!existsSync(TOKEN_FILE)) return null;
+    const raw = readFileSync(TOKEN_FILE, 'utf-8');
+    const token = JSON.parse(raw) as StoredToken;
+    return isTokenValid(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveToFile(token: StoredToken): void {
+  try {
+    ensureDataDir();
+    writeFileSync(TOKEN_FILE, JSON.stringify(token, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[token-store] 写入本地文件失败:', err instanceof Error ? err.message : err);
+  }
+}
+
+function deleteFile(): void {
+  try { if (existsSync(TOKEN_FILE)) unlinkSync(TOKEN_FILE); } catch { /* ignore */ }
+}
+
 // ── DB 操作 ──
 
 async function loadFromDb(): Promise<StoredToken | null> {
@@ -73,12 +109,15 @@ async function loadFromDb(): Promise<StoredToken | null> {
     const token = rowToToken(rows[0] as Record<string, unknown>);
     return isTokenValid(token) ? token : null;
   } catch (err) {
-    console.error('[token-store] 从数据库加载 token 失败:', err);
-    return null;
+    console.error('[token-store] 从数据库加载 token 失败，尝试本地文件兜底:', err instanceof Error ? err.message : err);
+    return loadFromFile();
   }
 }
 
 async function saveToDb(token: StoredToken): Promise<void> {
+  // 先写本地文件（可靠兜底）
+  saveToFile(token);
+
   await sql()`
     INSERT INTO user_tokens (id, access_token, access_token_expire_at,
       refresh_token, refresh_token_expire_at, updated_at)
@@ -94,7 +133,10 @@ async function saveToDb(token: StoredToken): Promise<void> {
 }
 
 async function deleteFromDb(): Promise<void> {
-  await sql()`DELETE FROM user_tokens WHERE id = 'default'`;
+  deleteFile();
+  try {
+    await sql()`DELETE FROM user_tokens WHERE id = 'default'`;
+  } catch { /* DB 不可达时忽略 */ }
 }
 
 // ── 公开 API ──

@@ -151,6 +151,7 @@ export default function ExecutionList({ workflowId, compact = false }: { workflo
             <input
               value={search}
               onChange={(e) => { setSearch(e.target.value); setVisibleCount(PAGE_SIZE); }}
+              onCompositionUpdate={(e) => { setSearch((e.target as HTMLInputElement).value); setVisibleCount(PAGE_SIZE); }}
               placeholder="搜索工作流名称"
               className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 w-48"
             />

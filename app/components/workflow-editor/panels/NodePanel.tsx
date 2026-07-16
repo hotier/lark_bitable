@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { nodeRegistry } from '@/lib/workflow-engine/node-registry';
 import { NODE_CATEGORIES } from '@/types';
+import { fuzzyMatch } from '@/lib/search';
 
 interface NodePanelProps {
   className?: string;
@@ -29,18 +30,17 @@ const CATEGORY_ICONS: Record<string, typeof Zap> = {
   lark_ecosystem: Building2,
 };
 
-/** 匹配节点：名称 / 描述 / 动作类型 */
+/** 匹配节点：名称 / 描述 / 动作类型（支持原文 > 全拼 > 首字母模糊搜索） */
 function matchNode(item: {
   displayName: string;
   description: string;
   actionType?: string;
 }, q: string): boolean {
-  const query = q.trim().toLowerCase();
-  if (!query) return true;
+  if (!q.trim()) return true;
   return (
-    item.displayName.toLowerCase().includes(query) ||
-    item.description.toLowerCase().includes(query) ||
-    (item.actionType?.toLowerCase().includes(query) ?? false)
+    fuzzyMatch(item.displayName, q) ||
+    fuzzyMatch(item.description, q) ||
+    fuzzyMatch(item.actionType ?? '', q)
   );
 }
 

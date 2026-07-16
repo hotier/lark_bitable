@@ -62,6 +62,7 @@ export const apiActionSchemas: Record<string, z.ZodTypeAny> = {
   exchangeAuthCode: z.object({}).passthrough(),
   logout: z.object({}).passthrough(),
   wikiStatus: z.object({}).passthrough(), // 诊断用：返回 wiki API 原始结构
+  deleteWikiFile: z.object({ spaceId: requiredStr('spaceId'), nodeToken: requiredStr('nodeToken'), objType: requiredStr('objType') }).passthrough(),
   listApps: z.object({ pageSize: optionalPageSize, pageToken: optionalStr, folderToken: optionalStr }).passthrough(),
   createApp: z.object({ appName: requiredStr('appName') }).passthrough(),
   listDocs: z.object({ pageSize: optionalPageSize, pageToken: optionalStr, folderToken: optionalStr }).passthrough(),

@@ -154,6 +154,7 @@ function NodeListView() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onCompositionUpdate={(e) => setSearch((e.target as HTMLInputElement).value)}
             placeholder="搜索节点…"
             className="w-full pl-7 pr-7 py-1.5 text-xs rounded-md border bg-white outline-none focus:ring-1 focus:ring-blue-400 transition-colors dark:bg-neutral-800 dark:text-neutral-100 dark:placeholder:text-neutral-500"
             style={{ borderColor: 'var(--border)' }}

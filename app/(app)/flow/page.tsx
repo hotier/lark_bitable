@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Workflow as WorkflowIcon, Plus, Trash2, Clock, Layers, Search } from 'lucide-react';
 import type { Workflow } from '@/types';
 import { idGen } from '@/lib/workflow-engine/editor-store';
+import { fuzzySort } from '@/lib/search';
 import Toast from '@/app/components/Toast';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 import TopBar from '@/app/components/TopBar';
@@ -179,10 +180,12 @@ export default function FlowPage() {
 
 
 
-  // 过滤
-  const filtered = search
-    ? workflows.filter((w) => w.name.toLowerCase().includes(search.toLowerCase()))
-    : workflows;
+  // 过滤 + 按更新时间倒序（最新的在前）
+  const filtered = useMemo(
+    () => fuzzySort(workflows, (w) => w.name, search)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [workflows, search],
+  );
 
   // 时间格式化
   const fmtDate = (s: string) => {
@@ -217,6 +220,7 @@ export default function FlowPage() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onCompositionUpdate={(e) => setSearch((e.target as HTMLInputElement).value)}
             placeholder="搜索工作流..."
             className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-neutral-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 placeholder:text-neutral-400"
           />

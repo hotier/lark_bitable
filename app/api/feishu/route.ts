@@ -147,7 +147,7 @@ export async function POST(request: NextRequest) {
 
     // 诊断：返回 wiki API 原始结构，排查知识库文件不显示问题
     if (action === 'wikiStatus') {
-      const wikiDiag = await feishuService.wikiStatus(uaToken);
+      const wikiDiag = await feishuService.wikiStatus(uaToken, body.nodeToken || null);
       return okResponse(wikiDiag);
     }
 
@@ -227,6 +227,20 @@ export async function POST(request: NextRequest) {
             cacheDelByPrefix('sheets:');
           }
         }
+        result = { ok: true };
+        break;
+      }
+
+      // ====== 知识库（wiki）节点删除 ======
+      case 'deleteWikiFile': {
+        const { spaceId, nodeToken, objType } = body;
+        if (!spaceId || !nodeToken) throw new Error('缺少参数: spaceId, nodeToken');
+        await feishuService.deleteWikiNode(spaceId, nodeToken, objType, uaToken);
+        feishuService.clearWikiCache();
+        // wiki 节点会并入 docs/sheets/apps 各列表，全部失效以保证一致
+        cacheDelByPrefix('docs:');
+        cacheDelByPrefix('sheets:');
+        cacheDelByPrefix('apps:');
         result = { ok: true };
         break;
       }

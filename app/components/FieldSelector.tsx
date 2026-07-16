@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Table2, ClipboardList, Type, Hash, CircleDot, CheckSquare, Calendar, Check, User, Link, Paperclip, Phone, Mail, Sigma, Search, Clock, UserPlus, History } from 'lucide-react';
 import type { App, Table, Field } from '@/types';
+import { getFileDisplayName } from '@/lib/api';
+import { fuzzySort } from '@/lib/search';
 
 /* ====== 字段类型图标 ====== */
 const FIELD_TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -28,13 +30,11 @@ const FIELD_TYPE_ICON: Record<string, React.ComponentType<{ className?: string }
 /* ====== 下拉项组件 ====== */
 function DropdownItem({
   label,
-  sub,
   icon,
   active,
   onClick,
 }: {
   label: string;
-  sub?: string;
   icon?: React.ReactNode;
   active: boolean;
   onClick: () => void;
@@ -55,9 +55,6 @@ function DropdownItem({
       )}
       <div className="min-w-0 flex-1">
         <div className="truncate">{label}</div>
-        {sub && (
-          <div className="text-[10px] text-neutral-400 font-mono truncate">{sub}</div>
-        )}
       </div>
       {active && (
         <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -76,8 +73,14 @@ function SelectorDropdown({
   icon,
   loading,
   disabled,
+  searchable = false,
+  searchValue = '',
+  searchPlaceholder = '搜索…',
   onToggle,
+  onSearchChange,
   children,
+  emptyText,
+  resultCount,
 }: {
   open: boolean;
   label: string;
@@ -87,7 +90,25 @@ function SelectorDropdown({
   disabled: boolean;
   onToggle: () => void;
   children: React.ReactNode;
+  searchable?: boolean;
+  searchValue?: string;
+  searchPlaceholder?: string;
+  onSearchChange?: (value: string) => void;
+  emptyText?: string;
+  resultCount?: number;
 }) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (open && searchable && inputRef.current) {
+      // 延迟聚焦，等下拉动画展现
+      const t = setTimeout(() => inputRef.current?.focus(), 80);
+      return () => clearTimeout(t);
+    }
+  }, [open, searchable]);
+
+  const showEmpty = emptyText && resultCount === 0;
+
   return (
     <div className="relative">
       <button
@@ -121,8 +142,43 @@ function SelectorDropdown({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={onToggle} />
-          <div className="absolute top-full left-0 mt-1.5 w-72 max-h-64 overflow-y-auto bg-white rounded-md border border-neutral-200 shadow-xl shadow-neutral-200/50 z-20 py-1.5 animate-scale-in origin-top">
-            {children}
+          <div className="absolute top-full left-0 mt-1.5 w-72 bg-white rounded-md border border-neutral-200 shadow-xl shadow-neutral-200/50 z-20 animate-scale-in origin-top flex flex-col max-h-[360px]">
+            {/* 搜索框 */}
+            {searchable && onSearchChange && (
+              <div className="px-3 pt-2 pb-1.5 flex-shrink-0">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-neutral-400" />
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={searchValue}
+                    onChange={(e) => onSearchChange(e.target.value)}
+                    onCompositionUpdate={(e) => onSearchChange((e.target as HTMLInputElement).value)}
+                    placeholder={searchPlaceholder}
+                    className="w-full pl-8 pr-3 py-2 text-sm rounded-md border border-neutral-200 bg-neutral-50 placeholder:text-neutral-400 focus:outline-none focus:border-amber-300 focus:bg-white focus:ring-1 focus:ring-amber-100 transition-colors"
+                  />
+                  {searchValue && (
+                    <button
+                      onClick={() => onSearchChange('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-neutral-300 text-white flex items-center justify-center hover:bg-neutral-400 transition-colors"
+                    >
+                      <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 列表区域 */}
+            <div className="overflow-y-auto py-1.5">
+              {showEmpty ? (
+                <div className="px-4 py-6 text-center text-sm text-neutral-400">{emptyText}</div>
+              ) : (
+                children
+              )}
+            </div>
           </div>
         </>
       )}
@@ -177,6 +233,27 @@ export default function FieldSelector({
   const [openTable, setOpenTable] = useState(false);
   const [openField, setOpenField] = useState(false);
 
+  // 搜索关键词
+  const [appSearch, setAppSearch] = useState('');
+  const [tableSearch, setTableSearch] = useState('');
+  const [fieldSearch, setFieldSearch] = useState('');
+
+  // 过滤后的列表（支持原文 > 全拼 > 首字母模糊搜索）
+  const filteredApps = useMemo(
+    () => fuzzySort(apps, (a) => getFileDisplayName(a), appSearch),
+    [apps, appSearch],
+  );
+
+  const filteredTables = useMemo(
+    () => fuzzySort(tables, (t) => t.name, tableSearch),
+    [tables, tableSearch],
+  );
+
+  const filteredFields = useMemo(
+    () => fuzzySort(tableFields, (f) => f.name, fieldSearch),
+    [tableFields, fieldSearch],
+  );
+
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {/* 一级：多维表格 */}
@@ -191,21 +268,28 @@ export default function FieldSelector({
           setOpenApp(!openApp);
           setOpenTable(false);
           setOpenField(false);
+          if (openApp) setAppSearch('');
         }}
+        searchable
+        searchValue={appSearch}
+        searchPlaceholder="搜索多维表格…"
+        onSearchChange={setAppSearch}
+        emptyText="无匹配的多维表格"
+        resultCount={filteredApps.length}
       >
         {apps.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-neutral-400">暂无多维表格</div>
         ) : (
-          apps.map((app) => (
+          filteredApps.map((app) => (
             <DropdownItem
               key={app.app_token}
-              label={app.name}
-              sub={app.app_token}
+              label={getFileDisplayName(app)}
               icon={<Table2 className="w-4 h-4" />}
               active={selectedApp?.app_token === app.app_token}
               onClick={() => {
                 onSelectApp(app);
                 setOpenApp(false);
+                setAppSearch('');
               }}
             />
           ))
@@ -227,24 +311,31 @@ export default function FieldSelector({
             setOpenTable(!openTable);
             setOpenApp(false);
             setOpenField(false);
+            if (openTable) setTableSearch('');
           }
         }}
+        searchable
+        searchValue={tableSearch}
+        searchPlaceholder="搜索数据表…"
+        onSearchChange={setTableSearch}
+        emptyText="无匹配的数据表"
+        resultCount={filteredTables.length}
       >
         {!selectedApp ? (
           <div className="px-4 py-6 text-center text-sm text-neutral-400">请先选择多维表格</div>
         ) : tables.length === 0 && !loadingTables ? (
           <div className="px-4 py-6 text-center text-sm text-neutral-400">暂无数据表</div>
         ) : (
-          tables.map((table) => (
+          filteredTables.map((table) => (
             <DropdownItem
               key={table.table_id}
               label={table.name}
-              sub={table.table_id}
               icon={<ClipboardList className="w-4 h-4" />}
               active={selectedTableId === table.table_id}
               onClick={() => {
                 onSelectTable(table);
                 setOpenTable(false);
+                setTableSearch('');
               }}
             />
           ))
@@ -266,8 +357,15 @@ export default function FieldSelector({
             setOpenField(!openField);
             setOpenApp(false);
             setOpenTable(false);
+            if (openField) setFieldSearch('');
           }
         }}
+        searchable
+        searchValue={fieldSearch}
+        searchPlaceholder="搜索字段…"
+        onSearchChange={setFieldSearch}
+        emptyText="无匹配的字段"
+        resultCount={filteredFields.length}
       >
         {!selectedTableId ? (
           <div className="px-4 py-6 text-center text-sm text-neutral-400">请先选择数据表</div>
@@ -275,31 +373,32 @@ export default function FieldSelector({
           <div className="px-4 py-6 text-center text-sm text-neutral-400">暂无字段</div>
         ) : (
           <>
-            {/* 全选/清空快捷操作 */}
-            <div className="px-3 pb-2 mb-1 border-b border-neutral-100">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => { tableFields.forEach((f) => { if (!selectedFieldIds.has(f.field_id)) onToggleField(f); }); }}
-                  className="text-[11px] font-medium text-amber-600 hover:text-amber-700"
-                >
-                  全选
-                </button>
-                <span className="text-neutral-300">|</span>
-                <button
-                  onClick={() => { tableFields.forEach((f) => { if (selectedFieldIds.has(f.field_id)) onToggleField(f); }); }}
-                  className="text-[11px] font-medium text-neutral-400 hover:text-neutral-600"
-                >
-                  清空
-                </button>
+            {/* 全选/清空快捷操作 — 搜索时隐藏 */}
+            {!fieldSearch.trim() && (
+              <div className="px-3 pb-2 mb-1 border-b border-neutral-100">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => { tableFields.forEach((f) => { if (!selectedFieldIds.has(f.field_id)) onToggleField(f); }); }}
+                    className="text-[11px] font-medium text-amber-600 hover:text-amber-700"
+                  >
+                    全选
+                  </button>
+                  <span className="text-neutral-300">|</span>
+                  <button
+                    onClick={() => { tableFields.forEach((f) => { if (selectedFieldIds.has(f.field_id)) onToggleField(f); }); }}
+                    className="text-[11px] font-medium text-neutral-400 hover:text-neutral-600"
+                  >
+                    清空
+                  </button>
+                </div>
               </div>
-            </div>
-            {tableFields.map((field) => {
+            )}
+            {filteredFields.map((field) => {
               const checked = selectedFieldIds.has(field.field_id);
               return (
                 <DropdownItem
                   key={field.field_id}
                   label={field.name}
-                  sub={field.field_id}
                   icon={(() => { const Icon = FIELD_TYPE_ICON[field.type]; return Icon ? <Icon className="w-3.5 h-3.5" /> : <span>?</span>; })()}
                   active={checked}
                   onClick={() => onToggleField(field)}

@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Clock, Table2, Folder } from 'lucide-react';
+import { Clock, Table2, Folder, BookOpen, HardDrive, ArrowRight, Link } from 'lucide-react';
 import type { App } from '@/types';
+import { getFileDisplayName } from '@/lib/api';
 
 interface AppGridProps {
   apps: App[];
@@ -14,50 +15,13 @@ interface AppGridProps {
   onRefresh: () => void;
 }
 
-const ACCENT_COLORS = [
-  'from-amber-500 to-neutral-500',
-  'from-amber-500 to-pink-500',
-  'from-emerald-500 to-teal-500',
-  'from-amber-500 to-orange-500',
-  'from-rose-500 to-red-500',
-  'from-cyan-500 to-sky-500',
-];
-
 const BITABLE_ICON = (
-  <svg className="w-9 h-9" viewBox="0 0 36 36" fill="none">
-    {/* 外框 */}
-    <rect x="1" y="1" width="34" height="34" rx="6" fill="url(#bg)" stroke="#E2E8F0" strokeWidth="1.5" />
-    {/* 表头行 */}
-    <rect x="1" y="1" width="34" height="9" rx="6" fill="url(#header)" />
-    <rect x="1" y="3" width="34" height="7" fill="url(#header)" />
-    {/* 列分隔线 */}
-    <line x1="12" y1="10" x2="12" y2="35" stroke="#E2E8F0" strokeWidth="1.2" />
-    <line x1="24" y1="10" x2="24" y2="35" stroke="#E2E8F0" strokeWidth="1.2" />
-    {/* 行分隔线 */}
-    <line x1="1" y1="19" x2="35" y2="19" stroke="#E2E8F0" strokeWidth="1" />
-    <line x1="1" y1="27" x2="35" y2="27" stroke="#E2E8F0" strokeWidth="1" />
-    {/* 表头文字示意 */}
-    <rect x="4" y="4.5" width="5" height="2" rx="1" fill="white" opacity="0.7" />
-    <rect x="14" y="4.5" width="6" height="2" rx="1" fill="white" opacity="0.7" />
-    <rect x="26" y="4.5" width="7" height="2" rx="1" fill="white" opacity="0.7" />
-    {/* 数据行文字示意 */}
-    <rect x="4" y="13.5" width="4" height="1.5" rx="0.75" fill="#CBD5E1" />
-    <rect x="14" y="13.5" width="7" height="1.5" rx="0.75" fill="#CBD5E1" />
-    <rect x="26" y="13.5" width="5" height="1.5" rx="0.75" fill="#CBD5E1" />
-    <rect x="4" y="22" width="3" height="1.5" rx="0.75" fill="#CBD5E1" />
-    <rect x="14" y="22" width="5" height="1.5" rx="0.75" fill="#CBD5E1" />
-    <rect x="26" y="22" width="7" height="1.5" rx="0.75" fill="#CBD5E1" />
-    {/* 渐变色定义 */}
-    <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="36" y2="36" gradientUnits="userSpaceOnUse">
-        <stop stopColor="#EEF2FF" />
-        <stop offset="1" stopColor="#F8FAFC" />
-      </linearGradient>
-      <linearGradient id="header" x1="0" y1="0" x2="36" y2="0" gradientUnits="userSpaceOnUse">
-        <stop stopColor="#6366F1" />
-        <stop offset="1" stopColor="#818CF8" />
-      </linearGradient>
-    </defs>
+  <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="3" y1="9" x2="21" y2="9" />
+    <line x1="3" y1="14" x2="21" y2="14" />
+    <line x1="9" y1="9" x2="9" y2="20" />
+    <line x1="15" y1="9" x2="15" y2="20" />
   </svg>
 );
 
@@ -281,49 +245,46 @@ export default function AppGrid({
         <EmptyState isAuthenticated={isAuthenticated} />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-5">
-          {apps.map((app, index) => {
+          {apps.map((app) => {
             const isSelected = selectedApp?.app_token === app.app_token;
-            const accent = ACCENT_COLORS[index % ACCENT_COLORS.length];
+
 
             return (
               <div
                 key={app.app_token}
                 onClick={() => onSelectApp(app)}
-                className={`group relative bg-white rounded-lg border cursor-pointer transition-all duration-300 overflow-hidden ${
+                className={`group relative bg-white rounded-2xl border cursor-pointer transition-all duration-300 overflow-hidden ${
                   isSelected
-                    ? 'border-amber-300 shadow-lg shadow-amber-100/50 ring-2 ring-amber-100'
-                    : 'border-neutral-100 shadow-sm hover:shadow-xl hover:shadow-neutral-200/50 hover:-translate-y-1 hover:border-neutral-200'
+                    ? 'border-amber-400 shadow-lg shadow-amber-100 ring-1 ring-amber-200'
+                    : 'border-neutral-200 shadow-sm hover:shadow-xl hover:shadow-neutral-200/60 hover:-translate-y-1'
                 }`}
               >
-                {/* 顶部色条 */}
-                <div className={`h-1.5 bg-gradient-to-r ${accent}`} />
-
                 <div className="p-5">
-                  {/* 多维表格图标 */}
+                  {/* 顶部：图标 + 来源 */}
                   <div className="flex items-start justify-between mb-4">
-                    {BITABLE_ICON}
-                    {isSelected && (
-                      <span className="flex items-center gap-1 text-xs font-medium text-amber-500 bg-amber-50 px-2 py-1 rounded-full">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                        已选中
-                      </span>
-                    )}
+                    <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-sm">
+                      {BITABLE_ICON}
+                    </div>
+                    <div
+                      className="flex items-center gap-1.5 text-neutral-400"
+                      title={app.source === 'wiki' ? `来自文档库${app.space_name ? `：${app.space_name}` : ''}` : '来自云盘'}
+                    >
+                      {app.source === 'wiki' ? (
+                        <BookOpen className="w-3.5 h-3.5" />
+                      ) : (
+                        <HardDrive className="w-3.5 h-3.5" />
+                      )}
+                      <span className="text-xs">{app.source === 'wiki' ? '文档库' : '云盘'}</span>
+                    </div>
                   </div>
 
                   {/* 标题 */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <h3 className="font-bold text-neutral-800 text-base truncate group-hover:text-amber-600 transition-colors">
-                      {app.name}
-                    </h3>
-                    {app.source === 'wiki' && (
-                      <span
-                        className="text-[10px] leading-none px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100 whitespace-nowrap flex-shrink-0"
-                        title={`来自知识库${app.space_name ? `：${app.space_name}` : ''}`}
-                      >
-                        文档库
-                      </span>
-                    )}
-                  </div>
+                  <h3
+                    className="font-bold text-neutral-800 text-base truncate group-hover:text-amber-600 transition-colors"
+                    title={getFileDisplayName(app)}
+                  >
+                    {getFileDisplayName(app)}
+                  </h3>
 
                   {/* URL */}
                   {app.url && (
@@ -331,27 +292,20 @@ export default function AppGrid({
                       href={app.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 mt-1.5 mb-3 text-xs text-neutral-400 hover:text-amber-500 transition-colors truncate"
+                      className="flex items-center gap-1.5 mt-2 text-xs text-neutral-400 hover:text-amber-500 transition-colors truncate"
                       onClick={(e) => e.stopPropagation()}
+                      title={app.url}
                     >
-                      <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                      </svg>
+                      <Link className="w-3.5 h-3.5 flex-shrink-0" />
                       <span className="truncate">{app.url}</span>
                     </a>
                   )}
 
                   {/* 底部信息 */}
-                  <div className="flex items-center justify-between pt-3 border-t border-neutral-50">
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onRefresh(); }}
-                        className="p-0.5 rounded text-neutral-400 hover:text-amber-500 hover:bg-amber-50 transition-colors"
-                        title="同步更新"
-                      >
-                        <Clock className="w-3 h-3" />
-                      </button>
-                      <span className="text-xs text-neutral-400">
+                  <div className="flex items-center justify-between pt-4 mt-4 border-t border-neutral-100">
+                    <div className="flex items-center gap-1.5 text-neutral-400">
+                      <Clock className="w-3.5 h-3.5" />
+                      <span className="text-xs">
                         {app.update_time && !Number.isNaN(new Date(app.update_time).getTime())
                           ? (() => {
                               const d = new Date(app.update_time);
@@ -361,12 +315,17 @@ export default function AppGrid({
                           : '—'}
                       </span>
                     </div>
-                    <span className="text-xs font-medium text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                      选择表格
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
-                    </span>
+                    {isSelected ? (
+                      <span className="flex items-center gap-1 text-xs font-medium text-amber-500">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                        已选中
+                      </span>
+                    ) : (
+                      <span className="text-xs font-medium text-neutral-300 group-hover:text-amber-500 transition-colors flex items-center gap-1">
+                        选择
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

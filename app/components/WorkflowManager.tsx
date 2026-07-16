@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Zap, Settings, ClipboardList, Link, Clock, Calendar, Filter, Timer, X, Trash2, Plus, Search, Pencil, AlertTriangle, Globe, MessageSquare, Send, GripVertical, Copy, Play, Type, Hash, CircleDot, CheckSquare, Check, User, Paperclip, Phone, Mail, Sigma, UserPlus, History, Monitor, Webhook, ArrowUpLeft, Pin, Table as TableIcon } from 'lucide-react';
 import type { Field, Workflow, WorkflowNode, NodeKind, CrdAction, FieldMapping, FilterCondition, FilterOp, App, Table, TriggerKind } from '@/types';
 import { CRUD_ACTION_META, TRIGGER_KIND_META } from '@/types';
+import { getFileDisplayName } from '@/lib/api';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 import { CustomSelect } from '@/app/components/CustomSelect';
 
@@ -295,7 +296,7 @@ function ActionConfigPanel({
   };
 
   // ---- 当前选中的 app/table 名称用于展示 ----
-  const selectedAppName = apps.find((a) => a.app_token === targetAppToken)?.name ?? '';
+  const selectedAppName = apps.find((a) => a.app_token === targetAppToken) ? getFileDisplayName(apps.find((a) => a.app_token === targetAppToken)!) : '';
   const selectedTargetLabel = targetAppToken
     ? (targetTableName ? `${selectedAppName}-${targetTableName}` : selectedAppName)
     : '';
@@ -1074,7 +1075,7 @@ function AppTableGroupItem({
         >
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7"/>
         </svg>
-        <span className="text-xs font-semibold text-neutral-600">{app.name}</span>
+        <span className="text-xs font-semibold text-neutral-600">{getFileDisplayName(app)}</span>
       </button>
 
       {/* 展开后的数据表列表 */}
@@ -1151,7 +1152,7 @@ function FlowNodeCard({
   // 目标数据表名摘要（仅 CRUD action）
   let targetInfo = '';
   if (node.type === 'action' && node.actionConfig?.targetAppToken && node.actionConfig?.targetTableId) {
-    const appName = apps.find((a) => a.app_token === node.actionConfig!.targetAppToken)?.name ?? '';
+    const appName = apps.find((a) => a.app_token === node.actionConfig!.targetAppToken) ? getFileDisplayName(apps.find((a) => a.app_token === node.actionConfig!.targetAppToken)!) : '';
     const tableName = node.actionConfig.targetTableName || '';
     targetInfo = tableName ? `当前目标：${appName}-${tableName}` : `当前目标：${appName}`;
   }

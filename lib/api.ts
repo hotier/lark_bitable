@@ -32,6 +32,25 @@ const API_URL = '/api/feishu';
 const LS_TTL = 30 * 60 * 1000;
 
 /**
+ * 取文件的展示名：有名字用原名；名字为空（未命名）时按文档类型补「未命名xxx」占位。
+ * 类型来自 App.obj_type（drive 文件已在 services/feishu.ts 归一化为 file.type，
+ * 知识库节点用 wiki 的 obj_type；若都缺失则回退「未命名文件」）。
+ */
+export function getFileDisplayName(file: App): string {
+  if (file.name && file.name.trim()) return file.name;
+  switch ((file.obj_type || '').toLowerCase()) {
+    case 'doc':
+    case 'docx':    return '未命名文档';
+    case 'sheet':   return '未命名表格';
+    case 'bitable': return '未命名多维表格';
+    case 'slide':   return '未命名幻灯片';
+    case 'mindnote':return '未命名思维笔记';
+    case 'wiki':    return '未命名节点';
+    default:        return '未命名文件';
+  }
+}
+
+/**
  * 导出多维表格（或全部数据表）为 Excel/CSV 并触发浏览器下载。
  * 调用 /api/feishu/export 拿到文件流，按响应头中的文件名落地。
  * @param tableId 可选；传入则只导出该数据表，不传则导出全部数据表。
@@ -42,6 +61,7 @@ export async function exportBitable(
   format: 'xlsx' | 'csv' = 'xlsx',
   tableId?: string,
   appName?: string,
+  tableName?: string,
 ): Promise<void> {
   const res = await fetch('/api/feishu/export', {
     method: 'POST',
@@ -51,6 +71,7 @@ export async function exportBitable(
       format,
       ...(tableId ? { tableId } : {}),
       ...(appName ? { appName } : {}),
+      ...(tableName ? { tableName } : {}),
     }),
     credentials: 'include',
   });
@@ -65,6 +86,50 @@ export async function exportBitable(
   const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
   const quoted = cd.match(/filename="([^"]+)"/i);
   let fileName = `bitable_export.${format}`;
+  if (star) {
+    try { fileName = decodeURIComponent(star[1]); } catch { fileName = star[1]; }
+  } else if (quoted) {
+    fileName = quoted[1];
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * 飞书原生导出：调用飞书官方多维表格导出 API，异步轮询后下载。
+ * @param tableId 可选，传入时导出单表
+ * @param tableName 可选，数据表名，用于生成「多维表格名_数据表名_时间戳」文件名
+ */
+export async function exportBitableNative(
+  appToken: string,
+  format: 'xlsx' | 'csv' = 'xlsx',
+  tableId?: string,
+  tableName?: string,
+): Promise<void> {
+  const res = await fetch('/api/feishu/export-native', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appToken, format, tableId, tableName }),
+    credentials: 'include',
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({} as { error?: string }));
+    throw new Error(err.error || `飞书原生导出失败 (${res.status})`);
+  }
+
+  const cd = res.headers.get('Content-Disposition') || '';
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  const quoted = cd.match(/filename="([^"]+)"/i);
+  let fileName = `bitable_native_export.${format}`;
   if (star) {
     try { fileName = decodeURIComponent(star[1]); } catch { fileName = star[1]; }
   } else if (quoted) {
@@ -97,6 +162,7 @@ let appsCache: AppsCacheEntry | null = null;
 /** 清除 apps 缓存（用户登出或显式刷新时调用） */
 export function invalidateAppsCache() {
   appsCache = null;
+  clientCacheDel('apps');
 }
 
 /**
@@ -326,6 +392,18 @@ const docsCache = new Map<string, { data: ListAppsData; ts: number }>();
 export function invalidateDocsCache(folderToken = ''): void {
   if (folderToken === '') docsCache.clear();
   else docsCache.delete(folderToken);
+  // 同步清除浏览器本地缓存，避免刷新后从旧 localStorage 读回已删文件
+  clientCacheDel(`docs:${folderToken}`);
+}
+
+/**
+ * 删除知识库（wiki）节点后调用：该节点会并入 docs / sheets / apps 三套列表，
+ * 必须三套前端缓存（内存 + 本地）全部失效，否则任一页面刷新都可能从旧缓存读回已删文件。
+ */
+export function invalidateWikiCaches(): void {
+  invalidateDocsCache();
+  invalidateSheetsCache();
+  invalidateAppsCache();
 }
 
 export async function listDocs(pageSize = 100, pageToken = '', folderToken = '', force = false): Promise<ListAppsData> {
@@ -383,6 +461,8 @@ const sheetsCache = new Map<string, { data: ListAppsData; ts: number }>();
 export function invalidateSheetsCache(folderToken = ''): void {
   if (folderToken === '') sheetsCache.clear();
   else sheetsCache.delete(folderToken);
+  // 同步清除浏览器本地缓存，避免刷新后从旧 localStorage 读回已删文件
+  clientCacheDel(`sheets:${folderToken}`);
 }
 
 export async function listSheets(pageSize = 100, pageToken = '', folderToken = '', force = false): Promise<ListAppsData> {
@@ -435,6 +515,11 @@ export async function createSheet(title: string, folderToken?: string): Promise<
 
 export async function deleteFile(fileToken: string, fileType: string): Promise<void> {
   return request<void>({ action: 'deleteFile', fileToken, fileType });
+}
+
+/** 删除知识库（wiki）节点（按 space_id + node_token + obj_type） */
+export async function deleteWikiFile(spaceId: string, nodeToken: string, objType: string): Promise<void> {
+  return request<void>({ action: 'deleteWikiFile', spaceId, nodeToken, objType });
 }
 
 // ====== 单用户完整名片（卡片懒加载） ======

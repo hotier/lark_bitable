@@ -1,40 +1,23 @@
 import { NextResponse } from 'next/server';
-import { decrypt } from '@/lib/crypto';
 import { proxyFeishuFile } from '@/lib/preview-proxy';
 import { logger } from '@/lib/logger';
 
 /**
- * GET /api/feishu/files/preview?t=<encrypted_token>
- * 代理飞书文件内容（旧格式，保留兼容）
+ * GET /api/feishu/files/preview?ft=<file_token>&tid=<table_id>&fid=<field_id>&rid=<record_id>&n=<name>
+ * 代理飞书文件内容（无状态，不依赖数据库）
  */
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const encryptedToken = searchParams.get('t');
 
-    let fileToken: string;
-    let tableId: string | undefined;
-    let fieldId: string | undefined;
-    let recordId: string | undefined;
-    let fileName: string;
-
-    if (encryptedToken) {
-      const data = decrypt(encryptedToken);
-      fileToken = data.ft as string;
-      tableId = data.tid as string | undefined;
-      fieldId = data.fid as string | undefined;
-      recordId = data.rid as string | undefined;
-      fileName = (data.n as string) || fileToken || 'file';
-    } else {
-      fileToken = searchParams.get('file_token') || '';
-      tableId = searchParams.get('table_id') || undefined;
-      fieldId = searchParams.get('field_id') || undefined;
-      recordId = searchParams.get('record_id') || undefined;
-      fileName = searchParams.get('name') || fileToken || 'file';
-    }
+    const fileToken = searchParams.get('ft') || '';
+    const tableId = searchParams.get('tid') || undefined;
+    const fieldId = searchParams.get('fid') || undefined;
+    const recordId = searchParams.get('rid') || undefined;
+    const fileName = searchParams.get('n') || fileToken || 'file';
 
     if (!fileToken) {
-      return NextResponse.json({ error: '缺少参数: file_token' }, { status: 400 });
+      return NextResponse.json({ error: '缺少参数: ft' }, { status: 400 });
     }
 
     return proxyFeishuFile({ fileToken, tableId, fieldId, recordId, fileName });

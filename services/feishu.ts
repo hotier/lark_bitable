@@ -1,4 +1,5 @@
 import { Client, withUserAccessToken } from '@larksuiteoapi/node-sdk';
+import { Readable } from 'stream';
 import { loadTokenSync, saveToken, deleteToken, reloadToken } from '@/lib/token-store';
 import { withCache, cacheKey, cacheDel, cacheDelByPrefix, TTL } from '@/lib/cache';
 import { formatFieldValue } from '@/lib/field-format';
@@ -80,6 +81,8 @@ interface WikiNode {
   url: string;
   create_time: string;
   update_time: string;
+  creator_id: string;
+  owner_id: string;
 }
 
 // ====== 服务类 ======
@@ -356,7 +359,7 @@ class FeishuService {
       redirect_uri: uri,
       response_type: 'code',
       scope:
-        'bitable:app bitable:app:readonly drive:drive drive:file drive:export:readonly docx:document docx:document:readonly docs:document:export sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete wiki:wiki offline_access',
+        'bitable:app bitable:app:readonly drive:drive drive:file drive:export:readonly docx:document docx:document:readonly docs:document:export sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete wiki:wiki wiki:node:create wiki:node:move offline_access',
       state: state || '',
     });
     return `https://open.feishu.cn/open-apis/authen/v1/authorize?${params.toString()}`;
@@ -951,25 +954,10 @@ class FeishuService {
       // 飞书 drive.file.list API 不返回 creator_id，用 owner_id 作为兜底
       creator_id: (file as any).creator_id || (file as any).owner_id || '',
       source: 'drive' as const,
+      // 归一化对象类型：drive 文件用 file.type（bitable/docx/sheet...），
+      // 与知识库节点的 obj_type 一致，供 getFileDisplayName 按类型补「未命名xxx」。
+      obj_type: file.type,
     }));
-
-    // 批量获取创建人名片
-    const creatorIds = [...new Set(apps.map((a) => a.creator_id).filter(Boolean))];
-    console.log('[FeishuService.listDriveFiles] creatorIds:', creatorIds);
-    if (creatorIds.length > 0) {
-      try {
-        const profileMap = await this.getUserNamesBatch(creatorIds, userAccessToken);
-        for (const app of apps) {
-          if (app.creator_id && profileMap[app.creator_id]) {
-            const p = profileMap[app.creator_id];
-            app.creator_name = p.name;
-            app.creator_profile = p;
-          }
-        }
-      } catch (err) {
-        console.warn('[FeishuService.listDriveFiles] 获取创建人名片失败:', err);
-      }
-    }
 
     return {
       files: apps,
@@ -1055,9 +1043,13 @@ class FeishuService {
         if (json.code === 0 && json.data?.user) {
           const entry = this.extractUserProfile(json.data.user as Record<string, unknown>, idType);
           if (entry) profileMap[entry.key] = entry.profile;
+        } else if (json && json.code !== 0) {
+          // 如 99991679/99991672 缺权限、或 40030 用户不存在——记录以便排查
+          console.warn(`[FeishuService.getUserProfilesOneByOne] ${idType}(${uid}) 返回非0: code=${json.code} msg=${json.msg}`);
         }
-      } catch (err) {
-        // 单条失败继续
+      } catch (err: any) {
+        // 单条失败继续，但记录原因
+        console.warn(`[FeishuService.getUserProfilesOneByOne] ${idType}(${uid}) 请求异常:`, err?.msg || err?.message);
       }
     }
     return profileMap;
@@ -1264,7 +1256,9 @@ class FeishuService {
     const wiki = (await this.listWikiNodes(userAccessToken))
       .filter((n) => n.obj_type === 'bitable')
       .map((n) => this.wikiNodeToApp(n));
-    return this.mergeWikiApps(drive, wiki);
+    const merged = this.mergeWikiApps(drive, wiki);
+    await this.resolveCreatorNames(merged.files, userAccessToken);
+    return merged;
   }
 
   /** 列出所有云文档：云盘 docx + 知识库 doc/docx 节点 */
@@ -1279,7 +1273,9 @@ class FeishuService {
     const wiki = (await this.listWikiNodes(userAccessToken))
       .filter((n) => n.obj_type === 'doc' || n.obj_type === 'docx')
       .map((n) => this.wikiNodeToApp(n));
-    return this.mergeWikiApps(drive, wiki);
+    const merged = this.mergeWikiApps(drive, wiki);
+    await this.resolveCreatorNames(merged.files, userAccessToken);
+    return merged;
   }
 
   /** 列出所有在线表格：云盘 sheet + 知识库 sheet 节点 */
@@ -1294,7 +1290,9 @@ class FeishuService {
     const wiki = (await this.listWikiNodes(userAccessToken))
       .filter((n) => n.obj_type === 'sheet')
       .map((n) => this.wikiNodeToApp(n));
-    return this.mergeWikiApps(drive, wiki);
+    const merged = this.mergeWikiApps(drive, wiki);
+    await this.resolveCreatorNames(merged.files, userAccessToken);
+    return merged;
   }
 
   // ====== Wiki / 知识库（文档库） ======
@@ -1314,8 +1312,19 @@ class FeishuService {
     }
     try {
       const spaces = await this.fetchAllWikiSpaces(userAccessToken);
+      // 个人知识库（my_library / person）不被 wiki.space.list 枚举，
+      // 改用「根节点 token → get_node → space_id → spaceNode.list」拉取。
+      const personal = await this.fetchPersonalWikiSpaces(userAccessToken);
+      const seen = new Set(spaces.map((s) => s.space_id));
+      const allSpaces = [...spaces];
+      for (const p of personal) {
+        if (!seen.has(p.space_id)) {
+          seen.add(p.space_id);
+          allSpaces.push(p);
+        }
+      }
       const nodes: WikiNode[] = [];
-      for (const sp of spaces) {
+      for (const sp of allSpaces) {
         await this.collectWikiNodes(sp.space_id, sp.name, sp.space_type, '', userAccessToken, nodes);
       }
       this.wikiNodesCache = { ts: Date.now(), data: nodes };
@@ -1330,7 +1339,10 @@ class FeishuService {
    * 诊断用：直接调用 wiki API 并返回原始结构，不吞错、不读缓存。
    * 用于排查「重新授权后知识库文件不出现」问题。
    */
-  async wikiStatus(userAccessToken?: string | null): Promise<Record<string, unknown>> {
+  async wikiStatus(
+    userAccessToken?: string | null,
+    nodeToken?: string | null,
+  ): Promise<Record<string, unknown>> {
     const authed = this.isUserAuthenticated();
     const tokenType = authed ? 'user_access_token' : 'tenant_access_token(fallback)';
     const out: Record<string, unknown> = { authed, tokenType };
@@ -1375,6 +1387,99 @@ class FeishuService {
       }
       out.spaceDetails = spaceDetails;
       out.totalNodes = spaceDetails.reduce((s, d) => s + d.rootNodeCount, 0);
+
+      // 3) 直取节点：绕过空间列表，按 node_token 拉取（个人知识库/my library 常用路径）
+      if (nodeToken) {
+        try {
+          const gRes: any = await this.client.wiki.space.getNode(
+            { params: { token: nodeToken } },
+            this.sdkOptions(userAccessToken),
+          );
+          const node = gRes.data?.node;
+          out.getNode = {
+            code: gRes.code,
+            msg: gRes.msg,
+            hasNode: !!node,
+            space_id: node?.space_id,
+            node_token: node?.node_token,
+            obj_type: node?.obj_type,
+            title: node?.title,
+            url: node?.url,
+            parent_node_token: node?.parent_node_token,
+            owner: node?.owner,
+          };
+          // 3.1) 用直取到的 space_id 列根节点，验证「整棵文档树可遍历」
+          if (node?.space_id) {
+            try {
+              const snRes: any = await this.client.wiki.spaceNode.list(
+                { path: { space_id: node.space_id }, params: { page_size: 50 } },
+                this.sdkOptions(userAccessToken),
+              );
+              const items = snRes.data?.items || [];
+              const byType: Record<string, number> = {};
+              for (const raw of items) {
+                const n = raw?.node ?? raw;
+                byType[n.obj_type || 'unknown'] = (byType[n.obj_type || 'unknown'] || 0) + 1;
+              }
+              out.spaceNodeByGetNode = {
+                code: snRes.code,
+                msg: snRes.msg,
+                rootNodeCount: items.length,
+                byObjType: byType,
+                firstTitles: items.slice(0, 5).map((raw: any) => {
+                  const n = raw?.node ?? raw;
+                  return { title: n.title, obj_type: n.obj_type, node_token: n.node_token };
+                }),
+              };
+            } catch (e: any) {
+              out.spaceNodeByGetNode = { error: e?.message || String(e) };
+            }
+          }
+        } catch (e: any) {
+          out.getNode = {
+            code: e?.code ?? e?.response?.data?.code,
+            msg: e?.msg ?? e?.response?.data?.msg,
+            error: e?.message || String(e),
+          };
+        }
+      }
+
+      // 4) drive 文件类型分布：看 wiki 文档是否落在 drive 里（type==='wiki' 等）
+      try {
+        const dRes: any = await this.client.drive.file.list(
+          { params: { page_size: 50 } as any },
+          this.sdkOptions(userAccessToken),
+        );
+        const files = dRes.data?.files || [];
+        const byType: Record<string, number> = {};
+        for (const f of files) byType[f.type || 'unknown'] = (byType[f.type || 'unknown'] || 0) + 1;
+        out.driveList = {
+          code: dRes.code,
+          msg: dRes.msg,
+          total: files.length,
+          byType,
+        };
+      } catch (e: any) {
+        out.driveList = { error: e?.message || String(e), feishuCode: e?.code ?? e?.response?.data?.code };
+      }
+
+      // 5) 真实枚举：清缓存后跑一遍 listWikiNodes，确认个人知识库节点已被纳入
+      try {
+        this.wikiNodesCache = null;
+        const wn = await this.listWikiNodes(userAccessToken);
+        out.wikiNodes = {
+          count: wn.length,
+          sample: wn.slice(0, 8).map((n) => ({
+            title: n.title,
+            obj_type: n.obj_type,
+            space_type: n.space_type,
+            space_name: n.space_name,
+            node_token: n.node_token,
+          })),
+        };
+      } catch (e: any) {
+        out.wikiNodes = { error: e?.message || String(e) };
+      }
     } catch (err: any) {
       out.error = err?.message || String(err);
       out.feishuCode = err?.code ?? err?.response?.data?.code;
@@ -1403,6 +1508,52 @@ class FeishuService {
     return spaces;
   }
 
+  /**
+   * 个人知识库（my_library / person）不被 wiki.space.list 枚举，需从「根节点 token」反查 space_id。
+   * 返回去重后的个人知识空间列表，供 collectWikiNodes 遍历整棵文档树。
+   * 任何失败均降级跳过，绝不阻塞主流程。
+   */
+  private async fetchPersonalWikiSpaces(
+    userAccessToken?: string | null,
+  ): Promise<{ space_id: string; name: string; space_type: string }[]> {
+    const tokens = this.getPersonalWikiRootTokens();
+    const out: { space_id: string; name: string; space_type: string }[] = [];
+    const seen = new Set<string>();
+    for (const tok of tokens) {
+      if (!tok) continue;
+      try {
+        const gRes: any = await this.client.wiki.space.getNode(
+          { params: { token: tok } },
+          this.sdkOptions(userAccessToken),
+        );
+        const spaceId = gRes?.data?.node?.space_id;
+        if (spaceId && !seen.has(spaceId)) {
+          seen.add(spaceId);
+          out.push({ space_id: spaceId, name: '个人知识库', space_type: 'person' });
+        }
+      } catch (e: any) {
+        console.warn('[fetchPersonalWikiSpaces] getNode 失败，跳过根节点 token:', tok, e?.msg || e?.message);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 个人知识库根节点 token 列表：
+   * - 优先读环境变量 FEISHU_WIKI_ROOT_TOKENS（逗号分隔，可配置多个个人知识库）。
+   * - 未配置时回退到默认种子（用户个人知识库根节点），保证开箱即用。
+   */
+  private getPersonalWikiRootTokens(): string[] {
+    const env = process.env.FEISHU_WIKI_ROOT_TOKENS;
+    if (env && env.trim()) {
+      return env
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    return ['UXgGwJQc6iVeQckp5bQcRImgn8X'];
+  }
+
   /** BFS 递归收集某空间下的所有节点（含层级） */
   private async collectWikiNodes(
     spaceId: string,
@@ -1413,6 +1564,7 @@ class FeishuService {
     out: WikiNode[],
   ): Promise<void> {
     let pageToken = '';
+    let missingCreator = 0;
     do {
       const params: Record<string, unknown> = { page_size: 50, page_token: pageToken };
       if (parentNodeToken) params.parent_node_token = parentNodeToken;
@@ -1424,6 +1576,23 @@ class FeishuService {
       for (const raw of res.data?.items || []) {
         // 不同 SDK 版本：items 可能直接是节点，或包在 { node } 里
         const n = raw?.node ?? raw;
+        // 知识库节点的创建者：优先 creator（open_id 字符串），owner 作为兜底。
+        // owner 在部分 SDK 版本是 User 对象（含 open_id），也可能直接是 open_id 字符串。
+        const ownerOpenId =
+          (n.owner && typeof n.owner === 'object' ? n.owner.open_id : (typeof n.owner === 'string' ? n.owner : '')) ||
+          '';
+        const creatorId = n.creator || ownerOpenId || '';
+        // 诊断：首个节点采样，确认飞书是否真的返回 creator/owner 字段（缺创建人时排查用）
+        if (out.length === 0 && res.data?.items?.length) {
+          console.log('[collectWikiNodes] 首节点字段采样 space=%s:', spaceId, JSON.stringify({
+            hasCreator: n.creator !== undefined,
+            creator: n.creator,
+            hasOwner: n.owner !== undefined,
+            owner: n.owner,
+            obj_type: n.obj_type,
+          }));
+        }
+        if (!creatorId) missingCreator++;
         out.push({
           space_id: spaceId,
           space_name: spaceName,
@@ -1436,6 +1605,8 @@ class FeishuService {
           // 官方 wiki 节点时间字段为 obj_create_time / obj_edit_time（秒级 Unix 时间戳字符串）
           create_time: n.obj_create_time ? new Date(Number(n.obj_create_time) * 1000).toISOString() : '',
           update_time: n.obj_edit_time ? new Date(Number(n.obj_edit_time) * 1000).toISOString() : '',
+          creator_id: creatorId,
+          owner_id: ownerOpenId,
         });
         if (n.has_child) {
           await this.collectWikiNodes(spaceId, spaceName, spaceType, n.node_token, userAccessToken, out);
@@ -1443,6 +1614,9 @@ class FeishuService {
       }
       pageToken = res.data?.has_more ? (res.data?.page_token || '') : '';
     } while (pageToken);
+    if (missingCreator > 0) {
+      console.warn(`[collectWikiNodes] space=${spaceId} 共${out.length}节点中 ${missingCreator} 个缺失创建人(creator/owner 均未返回)`);
+    }
   }
 
   /** 将知识库节点归一化为 App（app_token 用底层资源 token，可直接打开/读取） */
@@ -1454,8 +1628,8 @@ class FeishuService {
       folder_token: '',
       create_time: n.create_time,
       update_time: n.update_time,
-      creator_id: '',
-      owner_id: '',
+      creator_id: n.creator_id,
+      owner_id: n.owner_id,
       source: 'wiki',
       space_id: n.space_id,
       space_name: n.space_name,
@@ -1478,6 +1652,31 @@ class FeishuService {
     return { files: merged, has_more: drive.has_more, page_token: drive.page_token };
   }
 
+  /**
+   * 批量解析文件创建人名片（open_id → 姓名/头像）。
+   * 统一在「云盘结果 + 知识库节点」合并后调用一次，
+   * 避免云盘与知识库各自解析导致重复请求，并保证知识库文件也能拿到创建人。
+   */
+  private async resolveCreatorNames(
+    files: App[],
+    userAccessToken?: string | null,
+  ): Promise<void> {
+    const creatorIds = [...new Set(files.map((a) => a.creator_id).filter(Boolean))];
+    if (creatorIds.length === 0) return;
+    try {
+      const profileMap = await this.getUserNamesBatch(creatorIds, userAccessToken);
+      for (const file of files) {
+        if (file.creator_id && profileMap[file.creator_id]) {
+          const p = profileMap[file.creator_id];
+          file.creator_name = p.name;
+          file.creator_profile = p;
+        }
+      }
+    } catch (err) {
+      console.warn('[FeishuService.resolveCreatorNames] 获取创建人名片失败:', err);
+    }
+  }
+
   /** 删除云文件（支持 doc/docx/sheet/bitable 等类型） */
   async deleteFile(
     fileToken: string,
@@ -1497,6 +1696,106 @@ class FeishuService {
   }
 
   /**
+   * 删除知识库（wiki）节点。
+   *
+   * 飞书未提供同步删除接口：先 POST .../spaces/:space_id/nodes/:node_token/move
+   * （body 含 type:"delete_node"）触发异步删除任务拿到 task_id，再轮询 wiki.task.get
+   * 直到任务完成。SDK 未封装该删除方法，故用底层 request 直调。
+   *
+   * @param spaceId 知识空间 ID（来自节点 get_node 结果）
+   * @param nodeToken 待删除节点的 node_token
+   */
+  async deleteWikiNode(
+    spaceId: string,
+    nodeToken: string,
+    objType: string,
+    userAccessToken?: string | null,
+  ): Promise<void> {
+    console.log('[FeishuService.deleteWikiNode] spaceId=%s nodeToken=%s objType=%s', spaceId, nodeToken, objType);
+    if (!spaceId || !nodeToken) {
+      throw new Error('缺少知识空间 ID 或节点 token');
+    }
+    // 飞书删除节点接口：DELETE /open-apis/wiki/v2/spaces/:space_id/nodes/:node_token
+    // 关键：obj_type / include_children 必须放在【请求体 body】，绝不能放 query——
+    // 放 query 飞书网关会报 99992402(field validation failed)（之前两次都栽在这里）。
+    //   - obj_type 语义是「如何解释这个 token」：token 为「节点 token」(我们永远是
+    //     node_token) 时必须传 'wiki' 表示按节点删除；仅当 token 是云文档 obj_token
+    //     （把云文档移出知识库）时才传 docx/sheet 等。实测：body 里误传底层文档类型
+    //     docx 会返回 131005(node not found)，故这里固定用 'wiki'。
+    //   - include_children=true 级联删除子树（飞书默认行为）。
+    // 注意：飞书对 400 等非 2xx 状态会直接抛 AxiosError，错误码在 err.response.data 中，
+    // 因此必须 try/catch 才能捕获 131005（节点已不存在）做幂等处理。
+    let body: any;
+    try {
+      const delRes: any = await (this.client as any).request(
+        {
+          method: 'DELETE',
+          url: `https://open.feishu.cn/open-apis/wiki/v2/spaces/${spaceId}/nodes/${nodeToken}`,
+          data: { obj_type: 'wiki', include_children: true },
+          headers: { 'Content-Type': 'application/json' },
+        },
+        this.sdkOptions(userAccessToken),
+      );
+      body = delRes?.data ?? delRes;
+    } catch (err: any) {
+      // 非 2xx 走异常路径：从响应体取飞书错误码
+      const errBody = err?.response?.data ?? err?.data;
+      const errCode = errBody?.code;
+      const errMsg = errBody?.msg;
+      if (errCode === 131005) {
+        console.log('[deleteWikiNode] 节点已不存在(131005)，视为删除成功(幂等)');
+        return;
+      }
+      if (errCode !== undefined) {
+        throwFeishuError('删除知识库节点失败', errCode, errMsg);
+      }
+      throw err;
+    }
+    if (body?.code !== undefined && body?.code !== 0) {
+      // 131005 表示节点已不存在——删除天然幂等，直接视为成功
+      if (body.code === 131005) {
+        console.log('[deleteWikiNode] 节点已不存在(131005)，视为删除成功(幂等)');
+        return;
+      }
+      throwFeishuError('删除知识库节点失败', body.code, body.msg);
+    }
+    const taskId = body?.data?.task_id;
+    if (!taskId) {
+      // 同步完成、无 task_id，直接视为成功
+      return;
+    }
+    // 2) 轮询任务结果（最长 ~30s）：GET /wiki/v2/tasks/:task_id?task_type=delete_node
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const tRes: any = await this.client.wiki.task.get(
+          { params: { task_type: 'delete_node' }, path: { task_id: taskId } } as any,
+          this.sdkOptions(userAccessToken),
+        );
+        if (tRes?.code === 0 || tRes?.data?.code === 0) {
+          // 飞书任务状态位于通用 key data.task.simple_task_result.status（非 delete_node_result）
+          // 约定：0=完成, 1=进行中, 2=失败
+          const result = tRes?.data?.task?.simple_task_result;
+          const status = result?.status;
+          if (status === 0 || status === '0') return; // 删除完成
+          if (status === 2 || status === '2') {
+            throw new Error(`删除知识库节点任务失败(status=${status})`);
+          }
+          // status === 1 / 其它 → 继续轮询
+        }
+      } catch (e: any) {
+        console.warn('[deleteWikiNode] 轮询任务失败(继续重试):', e?.msg || e?.message);
+      }
+    }
+  }
+
+  /** 清除知识库节点内存缓存（删除后调用，保证下次拉取为最新） */
+  clearWikiCache(): void {
+    this.wikiNodesCache = null;
+  }
+
+  /**
    * 导出整个多维表格为 xlsx / csv。
    *
    * 飞书 drive.export_task 对「经 bitable:app 接口访问的 base」无法作为 drive 文件导出
@@ -1512,6 +1811,7 @@ class FeishuService {
     userAccessToken?: string | null,
     tableId?: string | null,
     appName?: string | null,
+    tableName?: string | null,
   ): Promise<{ buffer: Buffer; fileName: string; fileExtension: string }> {
     console.log('[FeishuService.exportBitable] appToken=%s format=%s tableId=%s (records-based)',
       appToken, format, tableId ?? '(全部表)');
@@ -1569,13 +1869,17 @@ class FeishuService {
     console.log('[FeishuService.exportBitable] appName(前端)=%s effectiveAppName=%s',
       appName ?? '(空)', effectiveAppName ?? '(空)');
 
+    // ④ 文件名：多维表格名_数据表名_yyyymmddhhmmss
     const stamp = formatStamp(new Date());
-    // 拼好后把连续的多个下划线收成单个，避免飞书原名里的 __ / ___ 叠加分隔符后变得难看
-    const baseName = (
-      targetTables.length === 1
-        ? `${sanitizeFileName(effectiveAppName ?? '') || '多维表格'}_${sanitizeSheetName(targetTables[0].name) || targetTables[0].table_id}_${stamp}`
-        : `多维表格导出_${appToken.slice(-6)}_${stamp}`
-    ).replace(/_+/g, '_');
+    const safeApp = sanitizeFileName(effectiveAppName ?? '') || '多维表格';
+
+    let baseName: string;
+    if (targetTables.length === 1) {
+      const safeTable = sanitizeFileName(tableName || targetTables[0].name) || targetTables[0].table_id;
+      baseName = `${safeApp}_${safeTable}_${stamp}`.replace(/_+/g, '_');
+    } else {
+      baseName = `${safeApp}_${stamp}`.replace(/_+/g, '_');
+    }
 
     // ③ CSV：原生拼装（多表时每张表前加一行表名注释）
     if (format === 'csv') {
@@ -1639,6 +1943,163 @@ class FeishuService {
       console.warn('[FeishuService.getBitableAppName] 获取失败，回退前端名字:', err);
       return null;
     }
+  }
+
+  /**
+   * 调用飞书官方 drive/v1/export_tasks 导出 API。
+   *
+   * 流程：创建导出任务 → 轮询结果 → 下载文件。
+   * 必须以用户身份（user_access_token）调用。
+   *
+   * 注意：飞书 API 的 sub_id 仅对 CSV 格式生效，XLSX 会导出整个多维表格（所有数据表）。
+   *
+   * @param appToken 多维表格 app_token
+   * @param format 'xlsx' | 'csv'
+   * @param subId 可选，仅 CSV 格式有效，传入 table_id 导出单表
+   * @returns 包含 buffer、文件名、扩展名的导出结果
+   */
+  async exportBitableNative(
+    appToken: string,
+    format: 'xlsx' | 'csv' = 'xlsx',
+    subId?: string,
+    tableName?: string,
+  ): Promise<{ buffer: Buffer; fileName: string; fileExtension: string }> {
+    const baseUrl = 'https://open.feishu.cn/open-apis';
+    // 先用 tenant_access_token（应用身份），导出失败再回退 user token
+    let token = await this.getTenantAccessToken();
+    let tokenType = 'tenant_access_token';
+    if (!token) {
+      token = await this.getValidAccessToken();
+      tokenType = 'user_access_token';
+    }
+    if (!token) {
+      throw new Error('无法获取有效的访问令牌，请先授权或检查应用配置。');
+    }
+    console.log('[FeishuService.exportBitableNative] 使用 token 类型=%s', tokenType);
+    const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    console.log('[FeishuService.exportBitableNative] appToken=%s format=%s subId=%s', appToken, format, subId || '(无-导出整个base)');
+
+    // ① 创建导出任务（始终用 CSV 请求飞书，以便利用 sub_id 单表能力）
+    const reqBody: Record<string, string> = {
+      file_extension: 'csv',
+      token: appToken,
+      type: 'bitable',
+    };
+    if (subId) reqBody.sub_id = subId;
+    console.log('[FeishuService.exportBitableNative] 请求体:', JSON.stringify(reqBody));
+    const createRes = await fetch(`${baseUrl}/drive/v1/export_tasks`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify(reqBody),
+    });
+    const createBody: any = await createRes.json();
+    console.log('[FeishuService.exportBitableNative] 建任务响应:', JSON.stringify(createBody)?.slice(0, 300));
+    if (createBody.code !== 0) {
+      throw new Error(`飞书原生导出建任务失败 [${createBody.code}]: ${createBody.msg || '未知错误'}`);
+    }
+    const ticket: string = createBody.data?.ticket;
+    if (!ticket) {
+      throw new Error('飞书原生导出未返回 ticket');
+    }
+
+    // ② 轮询任务结果（最多等待 60s）
+    const pollUrl = `${baseUrl}/drive/v1/export_tasks/${encodeURIComponent(ticket)}?token=${encodeURIComponent(appToken)}`;
+    let fileToken: string | undefined;
+    let pollCount = 0;
+    const maxPolls = 60;
+    // 失败状态码（非 0/1/2）
+    const failStatuses = new Set([3, 107, 108, 109, 110, 111, 122, 123, 6000]);
+    while (pollCount < maxPolls) {
+      pollCount++;
+      await new Promise((r) => setTimeout(r, 1000));
+      const pollRes = await fetch(pollUrl, { headers: authHeaders });
+      const pollBody: any = await pollRes.json();
+      console.log('[FeishuService.exportBitableNative] 轮询 #%d:', pollCount, JSON.stringify(pollBody)?.slice(0, 300));
+      if (pollBody.code !== 0) {
+        throw new Error(`飞书原生导出轮询失败 [${pollBody.code}]: ${pollBody.msg || '未知错误'}`);
+      }
+      const result = pollBody.data?.result;
+      const jobStatus: number | undefined =
+        result?.job_status != null ? Number(result.job_status) : undefined;
+      if (jobStatus === 0) {
+        fileToken = result.file_token;
+        break;
+      }
+      if (jobStatus === 1 || jobStatus === 2) {
+        // 初始化 / 处理中 → 继续轮询
+        continue;
+      }
+      if (jobStatus != null && failStatuses.has(jobStatus)) {
+        throw new Error(
+          `飞书原生导出任务失败(job_status=${jobStatus}): ${result?.job_error_msg || '无错误详情'}; result=${JSON.stringify(result)}`,
+        );
+      }
+    }
+
+    if (!fileToken) {
+      throw new Error(`飞书原生导出超时（已轮询 ${maxPolls} 次）`);
+    }
+
+    // ③ 下载导出文件（飞书返回 CSV）
+    const downloadUrl = `${baseUrl}/drive/v1/export_tasks/file/${encodeURIComponent(fileToken)}/download`;
+    const dlRes = await fetch(downloadUrl, { headers: authHeaders });
+    if (dlRes.status !== 200) {
+      const dlBody = await dlRes.text().catch(() => '');
+      throw new Error(`飞书原生导出下载失败 HTTP ${dlRes.status}: ${dlBody.slice(0, 200)}`);
+    }
+    const arrayBuffer = await dlRes.arrayBuffer();
+    let buffer = Buffer.from(arrayBuffer);
+
+    // ④ CSV → XLSX 转换（输出 xlsx 时服务端转换；CSV 则直接透传）
+    if (format === 'xlsx') {
+      const rows: Record<string, string>[] = [];
+      await new Promise<void>((resolve, reject) => {
+        Readable.from(buffer)
+          .pipe(require('csv-parser')())
+          .on('data', (row: Record<string, string>) => rows.push(row))
+          .on('end', resolve)
+          .on('error', reject);
+      });
+
+      console.log('[FeishuService.exportBitableNative] csv-parser 解析完成, 行数=%d, 列数=%d',
+        rows.length, rows.length > 0 ? Object.keys(rows[0]).length : 0);
+
+      const ExcelJS = (await import('exceljs')).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet(sanitizeSheetName(tableName || 'Sheet1'));
+
+      if (rows.length > 0) {
+        // 写表头
+        const headers = Object.keys(rows[0]);
+        ws.addRow(headers);
+        ws.getRow(1).font = { bold: true };
+
+        // 写数据行
+        for (const row of rows) {
+          ws.addRow(headers.map((h) => row[h] ?? ''));
+        }
+      }
+
+      const xlsxBuf = await wb.xlsx.writeBuffer();
+      buffer = Buffer.from(xlsxBuf);
+    }
+
+    // ⑤ 文件名：多维表格名_数据表名_yyyymmddhhmmss（始终单表导出）
+    let finalAppName = '多维表格';
+    try {
+      const real = await this.getBitableAppName(appToken, token);
+      if (real) finalAppName = real;
+    } catch { /* ignore */ }
+
+    const stamp = formatStamp(new Date());
+    const safeApp = sanitizeFileName(finalAppName) || '多维表格';
+    const safeTable = sanitizeFileName(tableName || '') || subId || '数据表';
+    const baseName = `${safeApp}_${safeTable}_${stamp}`.replace(/_+/g, '_');
+    const fileName = `${baseName}.${format}`;
+
+    console.log('[FeishuService.exportBitableNative] 完成, format=%s, size=%d, fileName=%s', format, buffer.length, fileName);
+    return { buffer, fileName, fileExtension: format };
   }
 
   // ====== IM 消息 API ======
